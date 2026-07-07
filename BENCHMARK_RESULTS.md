@@ -120,7 +120,7 @@ Takeaway: **the Blackwell CUTLASS kernel delivers ~2–2.85× H100's absolute th
 **GB300 — triton kv256** (head_dim-256 fallback), extended 9×9 grid (BS≤256 / SeqLen≤32768 — a superset of the 8×8):
 ![gb300 attn triton kv256 extended](figures/gb300/attn_triton_kv256_ext.png)
 
-**H100 — Hopper CUTLASS kv256** and the **matched CUTLASS kv128**:
+**H100 — Hopper CUTLASS kv256** (compare to the [upstream H100 reference](https://github.com/NVIDIA/recsys-examples/tree/main/examples/hstu/training)) and the **matched CUTLASS kv128**:
 ![h100 attn cutlass kv256](figures/h100/attn_cutlass_kv256.png)
 ![h100 attn cutlass kv128](figures/h100/attn_cutlass_kv128.png)
 
