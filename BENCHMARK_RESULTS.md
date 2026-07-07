@@ -36,6 +36,15 @@ isolates hardware + kernel-stack (arm64/sm_103/CUDA-13 vs x86/sm_90/CUDA-12.8), 
 
 ---
 
+# PART I — UPSTREAM BENCHMARKS
+
+**§1–§4 use the upstream recsys-examples scripts.** §1 is [real-data training](https://github.com/NVIDIA/recsys-examples/tree/main/examples/hstu/training);
+§2–§4 use the [benchmark](https://github.com/NVIDIA/recsys-examples/tree/main/examples/hstu/training/benchmark) scripts
+`hstu_attn_kernel_benchmark.py`, `hstu_layer_benchmark.py`, `run_all_experiments_local.sh`;
+§4c reproduces upstream's [`PERF_ANALYSIS.md`](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md).
+
+---
+
 ## 1. Real-data correctness + multi-GPU scaling
 Multi-task ranking AUC matches our prior v26.04 (py3.11) references → the py3.12 port is numerically correct.
 DEBUG+triton (kuairand, contextual) / pytorch backend (movielen). `RUN_EXIT=0` all.
@@ -225,10 +234,12 @@ which overlap and do not sum to 100):
 
 ---
 
-> **What's upstream vs ours.** §1–§4b run the upstream recsys-examples scripts (`hstu_attn_kernel_benchmark.py`,
-> `hstu_layer_benchmark.py`, `run_all_experiments_local.sh`); **§4c reproduces upstream's `PERF_ANALYSIS.md`** (in
-> progress). The sections below — **§5** (NVLink-vs-RDMA all-to-all), **§5b** (e2e scaling ladder), **§6** (1B-row
-> scale-up) — use **custom launch harnesses and probes we wrote**, and are *not* part of the upstream benchmark suite.
+# PART II — OUR OWN MEASUREMENTS (NOT upstream benchmarks)
+
+**§5, §5b, §6 are our own** — NVLink-vs-RDMA all-to-all, the e2e scaling ladder, and the 1B-row scale-up — built with
+**custom launch harnesses and probes we wrote**, with no upstream counterpart.
+
+---
 
 ## 5. Multi-node all-to-all — NVLink-vs-RDMA crossover ✅
 Multi-node via `eu_launch num=N x 4-GPU` + `torchrun`+Arnold-env (no Ray). These runs are **non-training scene
