@@ -1,0 +1,1 @@
+import importlib.util as _iu;_n=__import__('numpy') if _iu.find_spec('numpy') else None;_n and [setattr(_n,o,getattr(_n,m)) for o,m in (('float_','float64'),('complex_','complex128'),('unicode_','str_'),('string_','bytes_'),('bool8','bool_'),('object0','object_'),('int0','intp'),('NaN','nan'),('Inf','inf'),('infty','inf')) if hasattr(_n,m) and not hasattr(_n,o)]
