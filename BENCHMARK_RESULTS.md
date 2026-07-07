@@ -196,7 +196,7 @@ GPU: GB300 Triton-256 3022/7.56% and Blackwell-128 5583/13.96% (MFU on 2500) vs 
 — H100's mature Hopper CUTLASS wins raw MFU at the 256 shape, while GB300's absolute throughput is higher; and H100 pays
 a ~26% IB penalty at 16 that GB300's NVLink domain avoids.*
 
-### 4c. Detailed performance analysis — reproducing upstream `PERF_ANALYSIS.md` on GB300  ⏳ *in progress*
+### 4c. Detailed performance analysis — reproducing upstream [`PERF_ANALYSIS.md`](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md) on GB300  ⏳ *in progress*
 Upstream ships a rigorous single-GPU perf analysis (`training/benchmark/PERF_ANALYSIS.md`, nsys-profiled `exp4_caching_hr`
 on **H100**): **341.6 TFLOPS/GPU · 34.5% MFU**, a GPU-time breakdown (fused HSTU attn 43%, GEMM/UVQK 18%, elementwise 21%,
 nccl ~2%, idle 3.3%), an attention **fwd/bwd** table (FWD 561 TF / 56.8% · **BWD 336 TF / 34.0%, ~4× the fwd time**), and a
