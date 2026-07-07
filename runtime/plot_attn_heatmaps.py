@@ -93,13 +93,13 @@ GB, HP = 2500.0, 989.0   # bf16 dense peaks (GB300 per NVL72 Quick Start Guide; 
 JOBS = [
     ("gb300_cut128.txt",     "gb300/attn_cutlass_kv128.png", "GB300 — Blackwell CUTLASS, kv128 (head_dim 128)", GB),
     ("gb300_tri128.txt",     "gb300/attn_triton_kv128.png",  "GB300 — Triton, kv128 (head_dim 128)", GB),
-    ("gb300_tri256.txt",     "gb300/attn_triton_kv256.png",  "GB300 — Triton, kv256 (head_dim 256, production shape)", GB),
+    ("gb300_tri256.txt",     "gb300/attn_triton_kv256.png",  "GB300 — Triton, kv256 (head_dim 256)", GB),
     ("gb300_tri256_ext.txt", "gb300/attn_triton_kv256_ext.png", "GB300 — Triton kv256, EXTENDED grid (BS≤256 / SeqLen≤32768)", GB),
-    ("h100_orig.txt",        "h100/attn_cutlass_kv256.png",  "H100 — Hopper CUTLASS, kv256 (head_dim 256, production shape)", HP),
+    ("h100_orig.txt",        "h100/attn_cutlass_kv256.png",  "H100 — Hopper CUTLASS, kv256 (head_dim 256)", HP),
     ("h100_grid128.txt",     "h100/attn_cutlass_kv128.png",  "H100 — Hopper CUTLASS, kv128 (head_dim 128)", HP),
     ("h100_c64.txt",         "h100/attn_cutlass_kv64.png",   "H100 — Hopper CUTLASS, kv64 (head_dim 64)", HP),
     ("h100_t128.txt",        "h100/attn_triton_kv128.png",   "H100 — Triton, kv128 (head_dim 128)", HP),
-    ("h100_t256.txt",        "h100/attn_triton_kv256.png",   "H100 — Triton, kv256 (head_dim 256, production shape)", HP),
+    ("h100_t256.txt",        "h100/attn_triton_kv256.png",   "H100 — Triton, kv256 (head_dim 256)", HP),
 ]
 for src, out, title, peak in JOBS:
     if os.path.exists(os.path.join(DATA, src)): figure(src, out, title, peak)
