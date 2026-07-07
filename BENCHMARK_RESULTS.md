@@ -1,9 +1,9 @@
 # HSTU on GB300 NVL72 — benchmark results (recsys-examples v26.05)
 
 Generative-recommender (HSTU, arXiv:2402.17152) **training** benchmark, **GB300 (arm64 / sm_103 / CUDA 13)** vs
-**H100 (x86 / sm_90 / cu128)**, both on recsys-examples **v26.05**. GB300 numbers are from the **py3.12 parity image**
-`e90b0ed5` (kills the earlier py3.11-vs-upstream confound); H100 numbers are from the **cu128 build** `b5746f44` (the
-sm_90/cu12.8 parity build — v26.05/cu13 cannot run on our driver-535 H100 nodes).
+**H100 (x86 / sm_90 / cu128)**, both on recsys-examples **v26.05**. GB300 numbers are from the **py3.12 parity image**;
+H100 numbers are from the **cu128 build** (the sm_90/cu12.8 parity build — v26.05/cu13 cannot run on our driver-535
+H100 nodes).
 
 > **Read this first.**
 > - **MFU is on the bf16 dense peaks** — GB300 **2500 TFLOPS**, H100 **989 TFLOPS** — so cross-platform MFU here
