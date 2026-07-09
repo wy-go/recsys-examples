@@ -276,7 +276,7 @@ avg item length ≈ 491, so effective `T` ≈ 983 vs the non-jagged 4,096; **not
 
 #### §5.2 GPU-time breakdown
 
-Two views (detailed tables and ring/leaf definitions in the (A)/(B) subsections below):
+Two views:
 
 1. **Exposed** (upstream's method, directly comparable): charge each GPU instant to the single active kernel's category, on
    **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't inflate `idle`.
