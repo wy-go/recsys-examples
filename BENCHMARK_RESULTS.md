@@ -372,7 +372,7 @@ Raw kern-sum stays **not** upstream-comparable (NCCL inflated by wait time, over
 
 #### §5.3 attention forward/backward
 
-Rank0, one step (the fastest; summed over all 8 HSTU layers), for both (A) and (B) ([(A) = upstream's exact §2.3 method](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md#23-hstu-cutlass-attention-tflops-and-mfu)).
+Rank0, fastest step (summed over all 8 HSTU layers), for both (A) and (B) ([(A) = upstream's exact §2.3 method](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md#23-hstu-cutlass-attention-tflops-and-mfu)).
 Time is **actual kernel busy-time** (`nvtx_kern_sum`, de-duped to rank0 — *not* nsys's projected span, which under-counts
 multi-stream GEMM → MFU >peak); busy-time is per-step-stable (0.3%), so fastest ≈ every step. FLOPs use recsys
 [`cal_hstu_flops`](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/commons/utils/perf.py) on the **real
