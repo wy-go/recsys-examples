@@ -60,3 +60,17 @@ C0, 4 GPU) and self-tests the non-jagged path against the published doc numbers;
 
 MFU is on each GPU's bf16 dense peak (H100 989, GB300 2500 TFLOPS), so it is comparable across platforms; raw
 absolute TFLOPS are not. See BENCHMARK_RESULTS.md §5 for the full write-up.
+
+## Cross-checks (independent of the nsys pipeline)
+
+- `gemm_microbench.py` — times the exact UVQK/projection GEMM shapes standalone with CUDA events (fwd + dgrad +
+  wgrad). The training capture can't attribute per-op GEMM time (kernels launch via generic `cublasGemmEx`);
+  this isolates it, cross-checking §5.4.
+- `torch_profile_entry.sh` — runs the FUSED HSTU layer under `torch.profiler` (framework-attributed, in-context)
+  to cross-check the §5.3/§5.4 per-op split without nsys.
+
+## §1–§4 (not nsys-based)
+
+The correctness + kernel/layer/e2e sweeps in BENCHMARK_RESULTS.md §1–§4 are captured by `../run_benchmarks.sh`
+(`train` / `attn` / `layer` / `e2e` — plain torchrun, no cluster infra) and plotted by `../plot_attn_heatmaps.py`
+(§2) and `../plot_layer_compare.py` (§3).
