@@ -118,10 +118,16 @@ KuaiRand that carry contextual features).
 `num_contextuals: Optional[Union[int, torch.Tensor]]` … *“could be a single integer **or a tensor of shape
 (batch_size,)** when different sequences have different number of contextuals.”* The two sibling backends accept it:
 `TorchHSTUAttention.forward` and `FusedHSTUAttention.forward` both do `num_contextuals.to(torch.int32)`. Only the
-**Triton** path hard-asserts `int`. The underlying `triton_hstu_mha` accepts a per-sequence tensor, so the assert is
-simply over-restrictive. Net effect: **the Triton backend cannot train on real contextual data**, even though the API
-says it can. (On GB300 this bites in practice because head_dim-256 real data can't use CUTLASS — see Issue 1 — so it
-falls back to Triton, straight into this assert.)
+**Triton** path (in `hstu_attention.py`) hard-asserts `int`. The underlying `triton_hstu_mha` accepts a per-sequence
+tensor, so the assert is simply over-restrictive. Net effect: **the Triton backend cannot train on real contextual data**,
+even though the API says it can. (On GB300 this bites in practice because head_dim-256 real data can't use CUTLASS — see
+Issue 1 — so it falls back to Triton, straight into this assert.)
+
+> **Scope note:** this Issue is *only* about the module-level `TritonHSTUAttention` in `hstu_attention.py`, and it is
+> fixable (collapse to scalar). It is **not** the whole contextual story on Blackwell. The e2e training benchmark uses the
+> *fused* HSTU layer (`ops/fused_hstu_op.py`), where the roles invert: the Triton branch handles contextual fine, but the
+> **Blackwell CUTLASS branch rejects contextual entirely** — see **Issue 4**. So the earlier framing "only Triton rejects
+> contextual" is incorrect for the e2e CUTLASS path.
 
 **Minimal fix (what we used):** accept a uniform contextual tensor by collapsing it to the scalar when all entries are
 equal (and otherwise keep the tensor and let `triton_hstu_mha` handle it):
@@ -131,3 +137,49 @@ if isinstance(num_contextuals, torch.Tensor):
     assert int(num_contextuals.min()) == int(num_contextuals.max()), "uniform contextual length required"
     num_contextuals = int(num_contextuals.max().item())
 ```
+
+---
+
+## Issue 4 — Blackwell **CUTLASS** (fused HSTU op) rejects contextual tokens entirely (the e2e training path)
+
+**Where:** `ops/fused_hstu_op.py` — helper `_blackwell_num_contexts_or_none` (line ~61), called from the fused
+forward (line ~377) and backward (line ~762) inside the `elif sm_major_version == 10:` (Blackwell) branch:
+
+```python
+def _blackwell_num_contexts_or_none(num_contexts):
+    if num_contexts is None:
+        return None
+    if isinstance(num_contexts, int):
+        if num_contexts == 0:
+            return None
+        raise ValueError("Blackwell fused_hstu_op does not support contextual tokens")
+    if torch.count_nonzero(num_contexts).item() == 0:
+        return None
+    raise ValueError("Blackwell fused_hstu_op does not support contextual tokens")
+```
+
+**Status (verified on GB300):** ✅ reproduced — an e2e run with `--kernel_backend cutlass --include-contextual` aborts
+with `ValueError: Blackwell fused_hstu_op does not support contextual tokens`.
+
+**Trigger:** the **fused** HSTU layer (which the benchmark selects automatically whenever
+`tensor_model_parallel_size == 1` — `training/trainer/utils.py:75-76`) **+ `kernel_backend=cutlass` + any nonzero
+contextual**, on Blackwell (sm_10x). This rejects contextual *outright* — even a **uniform int** is refused (line ~67) —
+which is strictly stronger than Issue 3 (Triton rejects only the *per-sequence tensor*, but runs fine with a uniform int).
+
+**Why it matters (and how it differs from Issue 3):** these are two **distinct** restrictions in two **different** code
+paths, and only together do they explain the GB300 contextual situation:
+
+| | code path | rejects | fixable? | affects |
+|---|---|---|---|---|
+| **Issue 3** | `hstu_attention.py` `TritonHSTUAttention` | per-sequence *tensor* (accepts uniform int) | yes (collapse to scalar) | DEBUG/NATIVE-layer real-data runs |
+| **Issue 4** | `fused_hstu_op.py` Blackwell CUTLASS branch | **all** contextual (even uniform int) | **no** (hard `raise`, no in-op fallback) | e2e FUSED-layer CUTLASS runs |
+
+The fused op's **Triton** branch (`fused_hstu_op.py:177`) never reaches the guard, so **Triton runs contextual on
+Blackwell**; it is specifically the **CUTLASS** kernel that cannot. Net: on GB300 the fast Blackwell CUTLASS kernel is
+usable **only without contextual**, so any run that wants both the CUTLASS kernel *and* contextual is impossible — you
+must give up one. This is why the §4c CUTLASS perf-analysis (and the §4b B-ladder) is **forced** non-contextual: to
+profile the fast kernel we drop contextual; to keep contextual we'd have to switch to the (much slower) Triton kernel.
+
+**Contrast Hopper (H100):** the `sm_major_version == 9` branch does **not** call `_blackwell_num_contexts_or_none`, so
+Hopper CUTLASS runs contextual normally — which is why our H100 runs (and upstream's) are contextual and GB300's CUTLASS
+runs are not.
