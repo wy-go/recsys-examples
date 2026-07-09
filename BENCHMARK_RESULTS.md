@@ -124,7 +124,7 @@ limit — greyed `OVF` in the heatmap); triton has no such limit and fills the w
 
 | 💡 Takeaway |
 |:--|
-| *the Blackwell CUTLASS kernel delivers ~2–2.85× H100's absolute throughput at head_dim 128 and is slightly higher in utilization (64.6% vs 57.3% MFU = 1.13×). At head_dim 256 it's unavailable, so GB300 falls back to triton (37.0% MFU) while H100 keeps its mature 71.4% Hopper CUTLASS — there GB300's utilization drops to ~half (0.52×).* |
+| *The Blackwell CUTLASS kernel delivers ~2–2.85× H100's absolute throughput at head_dim 128 and is slightly higher in utilization (64.6% vs 57.3% MFU = 1.13×). At head_dim 256 it's unavailable, so GB300 falls back to triton (37.0% MFU) while H100 keeps its mature 71.4% Hopper CUTLASS — there GB300's utilization drops to ~half (0.52×).* |
 
 ---
 
@@ -178,7 +178,7 @@ the lift is. The embedding opts exp3–5 add little even at 16 GPU (§4b), and e
 
 | 💡 Takeaway |
 |:--|
-| *the CUTLASS (Blackwell) kernel ~2× the e2e training throughput vs the triton baseline/shuffler (178→368 TFLOPS).* |
+| *The CUTLASS (Blackwell) kernel ~2× the e2e training throughput vs the triton baseline/shuffler (178→368 TFLOPS).* |
 
 ### 4b. Full exp0–5 ladder × both head_dims — GB300 @ 16 GPU
 Two ladders (Blackwell can't do cutlass-256, so kv256 uses Triton throughout; kv128 uses Blackwell CUTLASS). Peak global
@@ -438,7 +438,7 @@ not shape-matched to the e2e — are in the exec log.)*
 
 | 💡 Takeaway |
 |:--|
-| *our kernels reproduce/beat upstream — so the §5.1 2× e2e gap is entirely non-kernel overhead (GPU idle on the host-resident embedding pipeline; §5.2).* |
+| *Our kernels reproduce/beat upstream — so the §5.1 2× e2e gap is entirely non-kernel overhead (GPU idle on the host-resident embedding pipeline; §5.2).* |
 
 **(B) Jagged, 16-GPU, rank0 fastest step** (same S=2048 run as §5.1/§5.2 (B); GEMM FLOP exact = linear in the measured token count):
 
