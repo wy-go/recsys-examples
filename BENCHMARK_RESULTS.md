@@ -132,6 +132,8 @@ limit — greyed `OVF` in the heatmap); triton has no such limit and fills the w
 GB300-adapted exp list (upstream defaults use `native`/TE + dim256-cutlass, both invalid on Blackwell, so:
 fused/debug, cutlass at dim≤128, triton for 256). bf16, 1 layer, max_seqlen 4096, batch 32.
 
+> **Units note:** `max_seqlen 4096` here is sequence **positions** (the post-interleave length the layer bench takes directly). §4/§5's `--max_sequence_length 2048` counts **items** (S), which the e2e trainer doubles (item+action) + adds C=3 → the *same* T ≈ 4096 positions. The two upstream APIs just use different units — not different lengths.
+
 **GB300** (e2e MFU on 2500):
 
 | exp | layer | fwd TF | bwd TF | e2e TF | e2e MFU | speedup |
