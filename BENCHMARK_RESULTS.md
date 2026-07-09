@@ -282,11 +282,13 @@ Two views (detailed tables and ring/leaf definitions in the (A)/(B) subsections 
    **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't inflate `idle`.
 2. **Raw kernel-time-sum** (secondary): each kernel's full GPU time summed — double-counts overlap, *not* upstream-comparable.
 
-**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream** ([upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
-vs our GB300; our-H100 panel fills when `figs-h100-exposed` lands. GB300's gemm leaves are the **exact** per-kernel split from
-its sqlite via `exposed_gemm_split.py`: UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm):
+**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream.**
 
 ![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
+
+*([upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
+vs our GB300; our-H100 panel fills when `figs-h100-exposed` lands. GB300's gemm leaves are the **exact** per-kernel split from
+its sqlite via `exposed_gemm_split.py`: UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm)*
 
 | exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj, D256) | Our GB300 (nj step 153, **D128**) |
 |---|---:|---:|---:|
@@ -369,7 +371,7 @@ Raw kern-sum stays **not** upstream-comparable (NCCL inflated by wait time, over
 
 #### §5.3 attention forward/backward
 
-Rank0, fastest step (summed over all 8 HSTU layers), for both (A) and (B).
+Rank0, fastest step (summed over all 8 HSTU layers).
 Time is **actual kernel busy-time** (`nvtx_kern_sum`, de-duped to rank0 — *not* nsys's projected span, which under-counts
 multi-stream GEMM → MFU >peak); busy-time is per-step-stable (0.3%), so fastest ≈ every step. FLOPs use recsys
 [`cal_hstu_flops`](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/commons/utils/perf.py) on the **real
