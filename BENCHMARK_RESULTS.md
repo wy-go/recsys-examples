@@ -310,7 +310,7 @@ its sqlite via `exposed_gemm_split.py`: UVQK 70.5 / PROJ 21.6 / G-O 8.0% of expo
 Exposed NCCL is only **7.1%** (the all-reduce is largely overlapped), so GB300 is **input/idle-bound, not comms-bound**.
 Upstream H100 is the opposite — compute-bound (43% attention, 24% GEMM, 3% idle).
 
-**(B) Jagged runs** (jagged nsysperf; **not** upstream-matched).
+**(B) Jagged.**
 
 ![jagged exposed sunburst on the fastest step — our H100 vs our GB300](figures/perf_sunburst_exposed.png)
 
