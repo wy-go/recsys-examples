@@ -258,7 +258,7 @@ yet the median step is **383.1 ms vs 187.01 ms** → MFU **16.86% ≈ ½ of 34.5
 GPU idle + elementwise on the `exp4_caching_hr` host-resident embedding pipeline**, not comms (the all-reduce is mostly
 overlapped; H100's exposed split is pending). GB300 (D128, half the FLOPs/step) runs each step in **80.5 ms** at **15.84%**.
 
-**(B) Jagged, 16-GPU** (same `--max_sequence_length 2048` **cap**, but jagged keeps the **real variable lengths** — measured
+**(B) Jagged** (same `--max_sequence_length 2048` **cap**, but jagged keeps the **real variable lengths** — measured
 avg item length ≈ 491, so effective `T` ≈ 983 vs the non-jagged 4,096; **not** upstream's method):
 
 | Metric | Our H100 (D256, ctx, jagged) | Our GB300 (D128, non-ctx, jagged) |
