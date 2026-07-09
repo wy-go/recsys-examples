@@ -240,7 +240,7 @@ Both (A)/(B) no-nsys, median over the steady-state window
 (the first ~200 iters are warmup, discarded), sampled every `log_interval=20` iters → **41 logged points**
 ((999−199)/20 + 1).
 
-**(A) Non-jagged, 16-GPU — matched to upstream** (H100 contextual `C=3`; GB300 non-contextual, Blackwell-forced):
+**(A) Non-jagged:**
 
 | Metric | Upstream H100 | Our H100 (D256, ctx) | Our GB300 (D128, non-ctx) |
 |---|---:|---:|---:|
