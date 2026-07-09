@@ -228,8 +228,9 @@ Upstream's benchmark is **H100-only and non-jagged**; we expand it two ways:
   same S=2048 run's **real variable lengths** (avg item ≈491, effective T≈983) — *not* upstream-comparable, kept as the contrast.
 
 **Key result.** Config **verified matched** (our H100 = **63.9 = upstream's 63.89 TFLOP/step**); our **kernels reproduce or
-beat upstream** (attention 42.25% ≈ 38.42%, GEMM 82% > 68%), yet **e2e is ~2× slower** (16.86% vs 34.54% MFU) — non-kernel
-overhead: the GPU **stalls on `exp4_caching_hr`'s host-resident embedding pipeline** (§5.2), not the HSTU math. For the full per-platform (H100/GB300) details, see the takeaways at the end.
+beat upstream** (attention 42.25% ≈ 38.42%, GEMM 82% > 68%), yet **e2e is ~2× slower** (16.86% vs 34.54% MFU). It is
+non-kernel overhead: the GPU **stalls on `exp4_caching_hr`'s host-resident embedding pipeline** (§5.2), not the HSTU math.
+Also see the §5 end for the key per-platform (H100/GB300) takeaways.
 
 
 #### §5.1 E2E training summary
