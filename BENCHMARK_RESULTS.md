@@ -25,7 +25,7 @@ isolates hardware + kernel-stack (arm64/sm_103/CUDA-13 vs x86/sm_90/CUDA-12.8), 
 | GPU / arch | NVIDIA **GB300**, sm_103, driver 580.105.08 | NVIDIA **H100 80GB HBM3**, sm_90, driver 535.129 |
 | CUDA | 13.0 | 12.8 |
 | Python / torch | 3.12 / **2.9.1+cu130** | 3.12 / **2.9.1+cu128** |
-| FBGEMM / TorchRec / Megatron | v1.5.0 / V1.5.0 / core_v0.13.1 | v1.5.0 / V1.5.0 / core_v0.13.1 |
+| FBGEMM / TorchRec / Megatron | v1.5.0 / v1.5.0 / core_v0.13.1 | v1.5.0 / v1.5.0 / core_v0.13.1 |
 | HSTU kernel build | `fbgemm_gpu_hstu` (`HSTU_ARCH_LIST="8.0 9.0 10.0"`) + Blackwell CuTe-DSL (sm_103) | `fbgemm_gpu_hstu` (`TORCH_CUDA_ARCH_LIST="9.0"`) — mature Hopper CUTLASS |
 | bf16 dense peak (for MFU) | **2500** TFLOPS | **989** TFLOPS |
 | HBM | 284 GB (nvidia-smi) | 80 GB |
