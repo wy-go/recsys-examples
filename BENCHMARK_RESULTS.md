@@ -282,8 +282,6 @@ Two views (detailed tables and ring/leaf definitions in the (A)/(B) subsections 
    **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't inflate `idle`.
 2. **Raw kernel-time-sum** (secondary): each kernel's full GPU time summed — double-counts overlap, *not* upstream-comparable.
 
----
-
 **(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream.**
 
 ![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
