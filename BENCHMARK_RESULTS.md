@@ -107,7 +107,7 @@ limit — greyed `OVF` in the heatmap); triton has no such limit and fills the w
 - **Supported shape (head_dim 128), same CUTLASS backend:** GB300 Blackwell **1615 TF / 64.6%** fwd vs H100 Hopper
   **567 / 57.3%** → GB300 = **2.85× absolute fwd** throughput at **1.13× the utilization**; fwd+bwd 1114 vs 504 = **2.21×**;
   and GB300's CUTLASS backward (996 TF / 39.8%) is **~2×** H100's on the same shape. GB300 leads on both axes here.
-- **Production shape (head_dim 256):** Blackwell CUTLASS can't run 256, so GB300 falls back to **triton (926 / 37.0%)**
+- **Head_dim 256:** Blackwell CUTLASS can't run 256, so GB300 falls back to **triton (926 / 37.0%)**
   vs H100 mature **CUTLASS (707 / 71.4%)** — GB300 still leads on absolute fwd (**1.31×**) but at ~half the utilization.
 - **Same kernel (triton D256):** GB300 926 / 37.0% vs H100 579 / 58.6% — GB300 **1.60×** H100 absolute fwd on the identical kernel.
 - **Extended headroom:** GB300's 284 GB HBM runs the 9×9 grid to BS256×SL32768 (peak fwd+bwd 335 TF) where H100's 80 GB OOMs.
@@ -172,7 +172,7 @@ the lift is. The embedding opts exp3–5 add little even at 16 GPU (§4b), and e
 
 | exp | TFLOPS (diag) | MFU | speedup |
 |---|---:|---:|---:|
-| exp0_baseline | 178.8 | 7.2% | 1.01× |
+| exp0_baseline | 178.8 | 7.2% | 1.00× |
 | exp1_shuffler | 177.8 | 7.1% | 1.00× |
 | **exp2_cutlass** (Blackwell) | **368.2** | **14.7%** | **2.07×** |
 
