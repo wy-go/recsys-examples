@@ -282,13 +282,11 @@ Two views (detailed tables and ring/leaf definitions in the (A)/(B) subsections 
    **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't inflate `idle`.
 2. **Raw kernel-time-sum** (secondary): each kernel's full GPU time summed — double-counts overlap, *not* upstream-comparable.
 
-**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream.**
+**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream** ([upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
+vs our GB300; our-H100 panel fills when `figs-h100-exposed` lands. GB300's gemm leaves are the **exact** per-kernel split from
+its sqlite via `exposed_gemm_split.py`: UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm):
 
 ![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
-
-*[Upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
-vs our GB300 (our-H100 panel fills when `figs-h100-exposed` lands). GB300's gemm leaves are the **exact** per-kernel split from
-its sqlite (`exposed_gemm_split.py`): UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm.*
 
 | exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj, D256) | Our GB300 (nj step 153, **D128**) |
 |---|---:|---:|---:|
