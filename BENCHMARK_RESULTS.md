@@ -281,21 +281,15 @@ Two views (detailed tables and ring/leaf definitions in the (A)/(B) subsections 
    **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't inflate `idle`.
 2. **Raw kernel-time-sum** (secondary): each kernel's full GPU time summed — double-counts overlap, *not* upstream-comparable.
 
-***Non-jagged*** — [upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg) vs our GB300 (our-H100 panel fills when `figs-h100-exposed` lands):
-![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
-
-***Jagged*** — our H100 vs our GB300:
-![jagged exposed sunburst on the fastest step — our H100 vs our GB300](figures/perf_sunburst_exposed.png)
-
-***Raw kernel-time-sum, all four cases*** — each kernel's full GPU time by category (overlaps double-counted, so NCCL is
-over-counted); compare with the exposed sunbursts above. Detailed numbers in the raw-sum table at the end of §5.2:
-![raw kernel-time-sum by category — H100/GB300 × non-jagged/jagged](figures/perf_kernsum_raw4.png)
-
 ---
 
-**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream.** *GB300's gemm leaves are the **exact** per-kernel split
-from its sqlite (`exposed_gemm_split.py`): UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm. The H100 column (with its exact
-gemm split) fills when `figs-h100-exposed` lands.*
+**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream.**
+
+![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
+
+*[Upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
+vs our GB300 (our-H100 panel fills when `figs-h100-exposed` lands). GB300's gemm leaves are the **exact** per-kernel split from
+its sqlite (`exposed_gemm_split.py`): UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm.*
 
 | exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj, D256) | Our GB300 (nj step 153, **D128**) |
 |---|---:|---:|---:|
@@ -317,7 +311,9 @@ gemm split) fills when `figs-h100-exposed` lands.*
 Exposed NCCL is only **7.1%** (the all-reduce is largely overlapped), so GB300 is **input/idle-bound, not comms-bound**.
 Upstream H100 is the opposite — compute-bound (43% attention, 24% GEMM, 3% idle).
 
-**(B) Jagged runs** (jagged nsysperf; **not** upstream-matched) — sunburst above:
+**(B) Jagged runs** (jagged nsysperf; **not** upstream-matched).
+
+![jagged exposed sunburst on the fastest step — our H100 vs our GB300](figures/perf_sunburst_exposed.png)
 
 | exposed, % of the fastest step | Our H100 (step 153, D256, jagged) | Our GB300 (step 155, **D128**, jagged) |
 |---|---:|---:|
@@ -346,9 +342,11 @@ busy-proportion gemm leaves, as we have no H100 jagged sqlite.)*
   55% / 19% here is purely that the short jagged step does little compute, so fixed idle + all-reduce are a bigger fraction —
   not a slower fabric (the 16-GPU all-reduce runs over the NVL72 NVLink domain, §6).
 
-**Raw kernel-time-sum** (figure above) — each kernel's full GPU busy-time summed by category, **per-step rank0 in ms** (not
+**Raw kernel-time-sum** — each kernel's full GPU busy-time summed by category, **per-step rank0 in ms** (not
 %-normalized, so magnitudes compare directly across cases; overlaps are double-counted, so the Σ exceeds the step wall-time
 and NCCL is over-counted). Categorized from `cuda_gpu_kern_sum` (`kernsum_categorize.py`, ÷GPUs ÷20 steps):
+
+![raw kernel-time-sum by category — H100/GB300 × non-jagged/jagged](figures/perf_kernsum_raw4.png)
 
 | Category (ms/step) | H100 nj | H100 jagged | GB300 nj | GB300 jagged |
 |---|---:|---:|---:|---:|
