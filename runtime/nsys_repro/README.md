@@ -40,14 +40,14 @@ multi-node). It's optional — the commands above are the whole capture; the scr
 | Doc section | What | Script | Inputs |
 |---|---|---|---|
 | §5.1 e2e MFU | median MFU over the steady-state window (iters 199–999) | (from the run log) | `run.log` |
-| §5.1(B) jagged FLOP | exact `cal_hstu_flops` total, calibrated NORM = log_interval × world | `reconstruct_2324.py` | `run.log` |
+| §5.1(B) jagged FLOP | exact `cal_hstu_flops` total, calibrated NORM = log_interval × world | `reconstruct_perop_mfu.py` | `run.log` |
 | §5.2 exposed (coarse) | 8-category exposed % on rank0's fastest step | `exposed_faststep.py <sqlite> <gputrace.csv> <label>` | sqlite + gputrace |
 | §5.2 gemm leaves (exact) | UVQK/PROJ/G-O by innermost NVTX range + nccl exposed/overlap | `exposed_gemm_split.py <sqlite> <gputrace.csv> <startNs> <endNs>` | sqlite + gputrace + fastest-step window |
 | §5.2 raw kern-sum | HSTU/NCCL/GEMM/Eltwise/Embedding/Other, per-step ms | `kernsum_categorize.py <cuda_gpu_kern_sum.csv> …` | `kern` CSV |
-| §5.3/§5.4 per-op MFU | attention + UVQK/proj TFLOPS & MFU, nj + jagged | `reconstruct_2324.py <dir>` | `nvtx` CSV + `run.log` |
-| figures | sunbursts + raw-kernsum bars | `../plot_sunburst_nj.py`, `../plot_sunburst.py`, `../plot_kernsum_raw4.py` | numbers baked from the above |
+| §5.3/§5.4 per-op MFU | attention + UVQK/proj TFLOPS & MFU, nj + jagged | `reconstruct_perop_mfu.py <dir>` | `nvtx` CSV + `run.log` |
+| figures | sunbursts | `../plot_sunburst_nj.py`, `../plot_sunburst.py` | numbers baked from the above |
 
-`reconstruct_2324.py` carries both platform configs (H100: peak 989, D256, C3, 8 GPU; GB300: peak 2500, D128,
+`reconstruct_perop_mfu.py` carries both platform configs (H100: peak 989, D256, C3, 8 GPU; GB300: peak 2500, D128,
 C0, 4 GPU) and self-tests the non-jagged path against the published doc numbers; every MFU is peak-checked.
 
 ## Method invariants (why these, not the obvious-but-wrong alternatives)

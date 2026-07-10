@@ -13,6 +13,12 @@ DATA={
   "Upstream H100 · step 162 · D256 (nj)": {
     "attention":43.09,"gemm":23.69,"elem":21.31,"embedding":5.74,"idle":3.34,"nccl":2.04,"other":0.66,"overlap":0.13,
     "gemm_sub":{"UVQK":17.85,"PROJ":4.80,"G-O":1.04},"nccl_sub":{"N-E":1.58,"N-O":0.46}},
+  # NOTE: gemm/nccl leaves are BUSY-PROPORTION (approximation) — the h100-16nj job (figs-h100-exposed) pushed no sqlite.
+  # TODO: when the in-queue H100 nj job returns WITH rep.sqlite.gz, recompute the EXACT split via
+  #       exposed_gemm_split.py and replace gemm_sub/nccl_sub below (and the §5.2(A) doc table H100 column).
+  "Our H100 · step 153 · D256 (nj)": {
+    "attention":24.7,"gemm":13.5,"elem":13.0,"embedding":0.6,"idle":2.8,"nccl":43.5,"other":1.7,"overlap":0.3,
+    "gemm_sub":{"UVQK":7.7,"PROJ":1.2,"G-O":4.6},"nccl_sub":{"N-E":43.2,"N-O":0.3}},
   "Our GB300 · step 153 · D128 (nj)": {   # run figs-gb300-nj2048-exp2; gemm EXACT per-kernel innermost-NVTX from sqlite (UVQK 70.5/PROJ 21.6/G-O[mlp] 8.0); nccl N-E/N-O windowed
     "attention":18.52,"gemm":13.01,"elem":36.11,"embedding":2.71,"idle":20.47,"nccl":7.28,"other":1.24,"overlap":0.54,
     "gemm_sub":{"UVQK":9.17,"PROJ":2.81,"G-O":1.04},"nccl_sub":{"N-E":7.08,"N-O":0.20}},

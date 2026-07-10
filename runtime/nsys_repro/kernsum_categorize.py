@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """§2.2 RAW kernel-time-sum — categorize `cuda_gpu_kern_sum` into HSTU/NCCL/GEMM/Eltwise/Embedding/Other.
 Each kernel's full GPU busy-time summed by category, as % of the sum (overlaps double-counted -> NCCL over-counted;
-that contrast with the exposed view is the point). Produces the numbers baked into plot_kernsum_raw4.py.
+that contrast with the exposed view is the point).
 
 Usage: kernsum_categorize.py <cuda_gpu_kern_sum.csv> [<csv2> ...]   # one per case
 """

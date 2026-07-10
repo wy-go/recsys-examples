@@ -16,7 +16,7 @@ DATA={
   "Our H100 · step 153 · D256 (jagged)": {   # gemm 3-way from innermost-NVTX busy (UVQK 73.7/PROJ 21.6/G-O[mlp] 4.7)
     "attention":42.78,"gemm":14.74,"elem":16.81,"embedding":1.61,"idle":10.55,"nccl":10.50,"other":2.74,"overlap":0.22,
     "gemm_sub":{"UVQK":10.86,"PROJ":3.18,"G-O":0.69},"nccl_sub":{"N-E":10.14,"N-O":0.36}},
-  "Our GB300 · step 155 · D128 (jagged)": {  # exp2-jag capture; gemm EXACT per-kernel innermost-NVTX from sqlite (short seq -> MLP dominates the tiny exposed gemm)
+  "Our GB300 · step 155 · D128 (jagged)": {  # exp4_caching_hr jagged capture (branch mislabeled 'exp2'); gemm EXACT per-kernel innermost-NVTX from sqlite (short seq -> MLP dominates the tiny exposed gemm)
     "attention":6.44,"gemm":3.80,"elem":12.71,"embedding":1.32,"idle":55.54,"nccl":19.50,"other":0.58,"overlap":0.11,
     "gemm_sub":{"UVQK":1.22,"PROJ":0.48,"G-O":2.10},"nccl_sub":{"N-E":19.06,"N-O":0.44}},
 }

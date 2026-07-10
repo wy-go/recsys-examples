@@ -5,7 +5,7 @@
 # Runs the upstream `exp4_caching_hr` e2e benchmark under Nsight Systems on node0 (which owns rank0),
 # joins the torchrun rendezvous on every other node, then emits the RAW nsys artifacts into $OUT. This
 # script only CAPTURES — all per-op MFU / exposed / raw-kernsum analysis is done afterward, off-node, by
-# the shipped python (exposed_faststep.py, reconstruct_2324.py, kernsum_categorize.py,
+# the shipped python (exposed_faststep.py, reconstruct_perop_mfu.py, kernsum_categorize.py,
 # exposed_gemm_split.py; see README.md). The `.rep`→`.sqlite` export is done here on the (arm) node
 # because x86 nsys hangs on arm reps; the sqlite is arch-portable for local analysis.
 #

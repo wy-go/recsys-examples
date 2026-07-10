@@ -15,7 +15,7 @@ multi-stream GEMM -> non-physical MFU >peak; see exec-log §2.4 caveat):
 
 Self-test: the non-jagged path must reproduce the published doc numbers, and every MFU is peak-checked (<100%).
 
-Usage: reconstruct_2324.py <dir-with-{plat}-{nj,jag}_kern.csv-and-.log>
+Usage: reconstruct_perop_mfu.py <dir-with-{plat}-{nj,jag}_kern.csv-and-.log>
 """
 import csv, re, sys, statistics
 from collections import defaultdict
