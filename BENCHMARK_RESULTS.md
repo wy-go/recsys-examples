@@ -260,8 +260,9 @@ Both (A)/(B) no-nsys, median over the steady-state window
 
 **Same config, 2× slower step.** Our H100 reproduces upstream's FLOP model (63.89 TFLOP/step) and its kernels (§5.3/§5.4),
 yet the median step is **383.1 ms vs 187.01 ms** → MFU **16.86%**, half of 34.54%. Since the kernels match, the gap is
-non-kernel: §5.2 traces it to **exposed NCCL**. Our 16-GPU job spans **2 DGX over IB**, so the gradient all-reduce and
-embedding all-to-all run on the critical path instead of overlapping as they do inside upstream's single NVLink domain.
+non-kernel: §5.2 traces it to **exposed NCCL**. Our 16 GPUs span **2 DGX joined by IB**, and §6b measures a ~26% MFU
+penalty from that inter-node link at 8→16 that GB300's NVL72 avoids — so the collectives land on the critical path, where
+upstream reports the same config at just **1.6%** exposed.
 GB300 (D128, half the FLOPs/step) runs each step in **80.5 ms** at **15.84%** — bottlenecked differently again (§5.2).
 
 **(B) Jagged** (same `--max_sequence_length 2048` **cap**, but jagged keeps the **real variable lengths** — measured
@@ -279,6 +280,11 @@ avg item length ≈ 491, so effective `T` ≈ 983 vs the non-jagged 4,096; **not
 | Median MFU/GPU | **11.49%** | **4.73%** |
 
 *Jagged keeps the real (short) sequence lengths, so FLOPs/step fall ~4× and MFU with them.*
+
+**Picking a platform.** At near-identical MFU (16.86% vs 15.84%), GB300 runs the same ~131k-token step in **80.5 ms vs
+H100's 383 ms — ≈4.8× the token throughput** (2.4× the achieved TFLOPS/GPU), but only at the Blackwell-forced **D128**
+(half the per-token attention FLOPs; D256 stays H100-only, [Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)). Net:
+GB300 for throughput when D128 suffices, H100 when you need the full D256 head dim.
 
 #### §5.2 GPU-time breakdown
 
@@ -318,8 +324,8 @@ UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed GEMM); H100's leaves are busy-propor
 42–83%), so a low *e2e* MFU can only mean the FLOP-heavy compute (attention + GEMM) fills a small share of the step. The
 exposed split shows what fills the rest:
 
-- **Upstream H100 — compute-bound.** Compute is **~67%** of the step (attention 43% + GEMM 24%); NCCL is just 1.6% (collectives overlap inside one NVLink domain). This is the healthy case — yet still only 34.5% MFU, because `exp4_caching_hr` carries ~27% inherent elementwise + embedding overhead on every platform.
-- **Our H100 — comms-bound.** The *same* kernels, but **43% of the step is exposed NCCL**, halving compute's share to ~38%. Our 16 GPUs span **2 DGX over IB**, so the gradient all-reduce and embedding all-to-all land on the critical path instead of overlapping — the 1.6% → 43% swing *is* the 2× e2e gap of §5.1.
+- **Upstream H100 — compute-bound.** Compute is **~67%** of the step (attention 43% + GEMM 24%); NCCL barely surfaces at **1.6%**. This is the healthy case — yet still only 34.5% MFU, because `exp4_caching_hr` carries ~27% inherent elementwise + embedding overhead on every platform.
+- **Our H100 — comms-bound.** The *same* kernels, but **43% of the step is exposed NCCL** (compute's share ~38%) — by busy-time ≈half sparse-embedding all-to-all, ≈half dense-model gradient all-reduce. Our two DGX are IB-joined (§6b's ~26% penalty at 8→16, which GB300's NVL72 avoids), so those collectives sit on the critical path. The 1.6% → 43% swing *is* the 2× e2e gap of §5.1.
 - **Our GB300 — underutilized.** D128 halves the FLOPs and Blackwell runs them ~2.5× faster, so attention + GEMM finish in only **~31%** of the step. Nothing useful replaces them: the rest is **memory-bound elementwise (36%)** — norms/activations that neither shrink at D128 nor use the tensor cores — plus **host-pipeline idle (20%)**. Its fast, narrow compute simply under-fills the step (NCCL is a cheap 7% over NVLink).
 
 Same config, efficient kernels — but e2e MFU is set by compute's share of the step: displaced by IB comms on our H100, under-filled by elementwise + host-idle on our GB300.
@@ -468,7 +474,7 @@ the same tiles amortize less — a launch/tile-overhead effect, not a FLOP chang
 
 | 💡 §5 Takeaways |
 |:--|
-| *• **Efficient kernels, low e2e MFU — for three different reasons.** e2e MFU = compute's share of the step × per-op efficiency; the kernels are efficient everywhere (42–83%), so the same matched config is **compute-bound** on upstream (compute fills ~67% of the step), **comms-bound** on our H100 (2 DGX over IB), and **underutilized** on our GB300 (fast, narrow D128 compute fills only ~31%). Even upstream reaches just 34.5% MFU — `exp4_caching_hr` carries ~27% elementwise + embedding overhead on every platform.*<br>*• **H100: kernels match, comms is the 2× gap.** Our H100 reproduces upstream's FLOPs (63.89T/step) and matches or beats its kernels (attention **42.25% ≥ 38.42%**; UVQK **83.25% > 66.42%**). Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **exposed NCCL** — over IB the gradient all-reduce and embedding all-to-all sit on the critical path (43% of the step, §5.2) instead of overlapping as they do in upstream's NVLink domain.*<br>*• **GB300: fast compute, under-filled step.** D128 + Blackwell finish attention+GEMM in ~31% of the step; the rest is **memory-bound elementwise (36%)** — norms/activations that don't use the tensor cores — plus **host-pipeline idle (20%)**. The hardware is starved, not the kernels slow.*<br>*• **GB300 comms scales with step length, not fabric.** Exposed NCCL is 7% on the dense step but ~19% on the short jagged step — the fixed-size all-reduce is simply a bigger fraction as compute shrinks, over the same NVL72 NVLink domain (§6), not a slower fabric.*<br>*• **Different attention kernels** — H100's Hopper CUTLASS vs GB300's Blackwell CUTLASS ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)).* |
+| *• **Efficient kernels, low e2e MFU — for three different reasons.** e2e MFU = compute's share of the step × per-op efficiency; the kernels are efficient everywhere (42–83%), so the same matched config is **compute-bound** on upstream (compute fills ~67% of the step), **comms-bound** on our H100 (2 DGX over IB), and **underutilized** on our GB300 (fast, narrow D128 compute fills only ~31%). Even upstream reaches just 34.5% MFU — `exp4_caching_hr` carries ~27% elementwise + embedding overhead on every platform.*<br>*• **H100: kernels match, comms is the 2× gap.** Our H100 reproduces upstream's FLOPs (63.89T/step) and matches or beats its kernels (attention **42.25% ≥ 38.42%**; UVQK **83.25% > 66.42%**). Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **exposed NCCL** — over IB the collectives (≈half embedding all-to-all, half dense-gradient all-reduce) sit on the critical path (43% of the step, §5.2), vs upstream's 1.6% at the same config.*<br>*• **GB300: fast compute, under-filled step.** D128 + Blackwell finish attention+GEMM in ~31% of the step; the rest is **memory-bound elementwise (36%)** — norms/activations that don't use the tensor cores — plus **host-pipeline idle (20%)**. The hardware is starved, not the kernels slow.*<br>*• **GB300 comms scales with step length, not fabric.** Exposed NCCL is 7% on the dense step but ~19% on the short jagged step — the fixed-size all-reduce is simply a bigger fraction as compute shrinks, over the same NVL72 NVLink domain (§6), not a slower fabric.*<br>*• **Different attention kernels** — H100's Hopper CUTLASS vs GB300's Blackwell CUTLASS ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)).* |
 
 ---
 
