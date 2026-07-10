@@ -222,7 +222,7 @@ config, S=2048** (`--max_sequence_length 2048`; `T = 2·S + C = 4099`):
 
 §5.1 = no-nsys median (iters 199–999); §5.2–5.4 = rank0's fastest step under nsys. §5.1 uses upstream's own scripts
 (`run_single_experiment_local.sh --nsys`); §5.2–5.4 reconstruct its *unscripted* analysis from `nsys stats` on those runs.
-Scripts, the section→script map, and the method invariants are in [`runtime/nsys_repro/`](runtime/nsys_repro/).
+Scripts, the section→script map, and the measurement conventions (what each metric counts, and why not the tempting-but-wrong alternatives) are in [`runtime/nsys_repro/`](runtime/nsys_repro/).
 
 Upstream's benchmark is **H100-only and non-jagged**; we expand it two ways:
 
@@ -232,8 +232,8 @@ Upstream's benchmark is **H100-only and non-jagged**; we expand it two ways:
   same S=2048 run's **real variable lengths** (avg item ≈491, effective T≈983) — *not* upstream-comparable, kept as the contrast.
 
 **Key result.** With config **verified matched** (our H100 = upstream's exact **63.89 TFLOP/step**), our **kernels reproduce
-or beat upstream** (attention 42.25% ≥ 38.42%, GEMM 82% > 68%) — yet **e2e is ~2× slower** (16.86% vs 34.54% MFU). The gap
-is entirely **non-kernel**: §5.2 shows the same config hits a *different bottleneck on each system* — upstream is
+or beat upstream** (attention 42.25% ≥ 38.42%, GEMM 82% > 68%) — yet **e2e is ~2× slower** (16.86% vs 34.54% MFU). Because
+the kernels match or beat upstream, the gap must lie **outside them**: §5.2 shows the same config hits a *different bottleneck on each system* — upstream is
 **compute-bound**, our H100 is **comms-bound** (16 GPUs = 2 DGX over IB, so the collectives sit exposed on the critical
 path), and our GB300 is **underutilized** (fast, narrow D128 compute under-fills the step — memory-bound elementwise + host-idle). Full per-platform story at the §5 end.
 
@@ -448,7 +448,7 @@ projection **61.28%** (small `K`, launch/tile-bound). *(Isolated layer-bench GEM
 
 | 💡 Takeaway |
 |:--|
-| *Our kernels reproduce or beat upstream, so the §5.1 2× e2e gap is entirely non-kernel — exposed NCCL on the 2-DGX-over-IB fabric (§5.2), not the HSTU math.* |
+| *Our kernels reproduce or beat upstream, so the §5.1 2× e2e gap is not in them — it is exposed NCCL on the 2-DGX-over-IB fabric (§5.2), not the HSTU math.* |
 
 **(B) Jagged, 16-GPU, rank0 fastest step** (same S=2048 run as §5.1/§5.2 (B); GEMM FLOP exact = linear in the measured token count):
 
