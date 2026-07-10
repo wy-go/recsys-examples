@@ -287,7 +287,7 @@ short sequences underfill GB300's fast compute (idle 55%, §5.2(B)).
 
 We report the **exposed** breakdown (upstream's method, directly comparable): charge each GPU instant to the single active
 kernel's category, on **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't
-inflate `idle`.
+inflate `idle`. In each table column below, **bold** marks the largest exposed bucket and *italic* the second-largest.
 
 > **Raw timelines:** the Nsight Systems captures behind these breakdowns are in
 > [`profiles/`](profiles/) — `{h100,gb300}_{nonjagged,jagged}.nsys-rep` (open in the Nsight Systems GUI ≥ 2026.1.3).
@@ -304,14 +304,14 @@ more exposed NCCL (43% vs 21%): IB collective exposure is highly variable step-t
 
 | exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj step 159, D256) | Our GB300 (nj step 153, **D128**) |
 |---|---:|---:|---:|
-| `hstu fwd/bwd` (attention) | **43.1%** | 33.7% | 18.5% |
+| `hstu fwd/bwd` (attention) | **43.1%** | **33.7%** | 18.5% |
 | `gemm / uvqk` | 17.9% | 14.7% | 9.2% |
 | `gemm / projection` | 4.8% | 2.6% | 2.8% |
 | `gemm / others` | 1.0% | 1.4% | 1.0% |
-| `elementwise` | 21.3% | 18.1% | **36.1%** |
+| `elementwise` | *21.3%* | 18.1% | **36.1%** |
 | `embedding op` | 5.7% | 0.9% | 2.7% |
-| `GPU idle` | 3.3% | 3.8% | 20.5% |
-| `nccl(exposed)` | 1.6% | **21.9%** | 7.1% |
+| `GPU idle` | 3.3% | 3.8% | *20.5%* |
+| `nccl(exposed)` | 1.6% | *21.9%* | 7.1% |
 | `nccl(overlap)` | 0.5% | 0.4% | 0.2% |
 | `others` | 0.7% | 2.4% | 1.2% |
 | `overlapped` | 0.1% | 0.1% | 0.5% |
@@ -340,14 +340,14 @@ H100 from `figs-h100-jag-timeline` (fastest step 94 ms). With the correct H100 s
 
 | exposed, % of the fastest step | Our H100 (step 153, D256, jagged) | Our GB300 (step 155, **D128**, jagged) |
 |---|---:|---:|
-| `hstu fwd/bwd` (attention) | 17.1% | 6.4% |
+| `hstu fwd/bwd` (attention) | *17.1%* | 6.4% |
 | `gemm / uvqk` | 7.5% | 1.2% |
 | `gemm / projection` | 2.2% | 0.5% |
 | `gemm / others` | 0.5% | 2.1% |
 | `elementwise` | 11.7% | 12.7% |
 | `embedding op` | 1.0% | 1.3% |
 | `GPU idle` | 14.6% | **55.5%** |
-| `nccl(exposed)` | **43.3%** | 19.1% |
+| `nccl(exposed)` | **43.3%** | *19.1%* |
 | `nccl(overlap)` | 0.3% | 0.4% |
 | `others` | 1.6% | 0.6% |
 | `overlapped` | 0.1% | 0.1% |
@@ -410,7 +410,7 @@ Jagged runs the same kernels on shorter effective sequences (avg ≈491 vs 2048)
 GB300 46.09% → 29.37%): attention falls hardest because its FLOPs shrink quadratically (∝ ΣLᵢ²) while the per-kernel
 launch/tile overhead does not.
 
-*Cross-check: a standalone fixed-shape layer-bench that isolates each kernel matched these (A) e2e per-op numbers — GB300
+*We also run a standalone fixed-shape layer-bench that isolates each kernel; it matches these (A) e2e per-op numbers — GB300
 attention fwd 51.8% ≈ 52.1%, bwd 43.4% ≈ 44.1%.*
 
 #### §5.4 UVQK vs projection GEMM
