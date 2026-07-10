@@ -15,7 +15,7 @@ DATA={
     "gemm_sub":{"UVQK":17.85,"PROJ":4.80,"G-O":1.04},"nccl_sub":{"N-E":1.58,"N-O":0.46}},
   # EXACT split from figs-h100-nj-timeline sqlite (genuinely-fastest 235ms step; exposed_gemm_split.py).
   # A 2nd capture's fastest step (323ms) had nccl 43% — IB collective exposure is highly variable step-to-step.
-  "Our H100 · fastest step · D256 (nj)": {
+  "Our H100 · step 159 · D256 (nj)": {
     "attention":33.73,"gemm":18.75,"elem":18.10,"embedding":0.88,"idle":3.80,"nccl":22.29,"other":2.37,"overlap":0.08,
     "gemm_sub":{"UVQK":14.75,"PROJ":2.58,"G-O":1.43},"nccl_sub":{"N-E":21.88,"N-O":0.41}},
   "Our GB300 · step 153 · D128 (nj)": {   # run figs-gb300-nj2048-exp2; gemm EXACT per-kernel innermost-NVTX from sqlite (UVQK 70.5/PROJ 21.6/G-O[mlp] 8.0); nccl N-E/N-O windowed

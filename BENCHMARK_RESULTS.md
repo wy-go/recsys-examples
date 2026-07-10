@@ -185,9 +185,11 @@ the lift is. The embedding opts exp3–5 add little even at 16 GPU (§4b), and e
 | *The CUTLASS (Blackwell) kernel ~2× the e2e training throughput vs the triton baseline/shuffler (178→368 TFLOPS).* |
 
 ### 4b. Full exp0–5 ladder × head_dim / backend — H100 + GB300 @ 16 GPU
-Three ladders at the §4 config (jagged, contextual). Blackwell can't do CUTLASS-256, so GB300's kv256 uses Triton and kv128
-uses Blackwell CUTLASS; H100 runs mature Hopper CUTLASS at kv256. Peak **global** TFLOPS / MFU (÷16 for per-GPU),
-`figs-{h100,gb300}-e2elad`.
+Three ladders at the §4 config (jagged, contextual), reproducing upstream's
+[E2E_BENCHMARK](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/E2E_BENCHMARK.md#2-results)
+exp0–5. Blackwell can't do CUTLASS-256, so GB300's kv256 uses Triton and kv128 uses Blackwell CUTLASS; H100 runs mature Hopper
+CUTLASS at kv256. **Peak global** TFLOPS / MFU (÷16 for per-GPU; via upstream's `analyze_results.py`, which reports the max —
+avg not captured here), `figs-{h100,gb300}-e2elad`.
 
 | rung | **H100: kv256, ctx, Hopper CUTLASS** | **GB300-A: kv256, ctx, Triton** | **GB300-B: kv128, Blackwell CUTLASS** |
 |---|---|---|---|
@@ -199,7 +201,7 @@ uses Blackwell CUTLASS; H100 runs mature Hopper CUTLASS at kv256. Peak **global*
 | 5 +prefetch | **3863 / 24.41%** | 2975 / 7.44% | 5371 / 13.42% |
 
 - **The CUTLASS step is the big lift wherever the hardware supports it:** H100 Hopper CUTLASS-256 jumps **10.46 → 22.88%** at
-  exp2 (2.2×), GB300 Blackwell-128 jumps **6.50 → 13.88%** (2.13×). GB300's Triton-256 ladder (A) never gets it (Blackwell can't do CUTLASS-256), stuck at ~7.5%.
+  exp2 (2.2×), GB300 Blackwell-128 jumps **6.50 → 13.88%** (2.13×). GB300's Triton-256 ladder (A) never gets it (Blackwell can't do CUTLASS-256), stuck at ~7.5%. Upstream's [E2E_BENCHMARK](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/E2E_BENCHMARK.md#2-results) reports a larger **4.00×** from the CUTLASS step — a bigger jump than our ~2.1–2.2× (a different baseline/config on their side).
 - **H100 leads on MFU; GB300 on absolute throughput.** At exp4, H100 CUTLASS-256 reaches **23.38% MFU** (on the 989 peak) vs
   GB300-B Blackwell-128 **13.74%** (on 2500) — yet GB300's absolute TFLOPS (5494) still exceeds H100's (3700).
 - **Embedding opts (exp3–5) are ~flat on all three:** at 50M rows the all-to-all is already cheap, so caching/hash-RR/prefetch add little — same shape as upstream's "prefetch flat when a2a is small."
@@ -300,7 +302,7 @@ GB300 UVQK 70.5 / PROJ 21.6 / G-O 8.0%; our H100 UVQK 78.7 / PROJ 13.7 / G-O 7.6
 from `figs-h100-nj-timeline` — the genuinely-fastest step (235 ms). A second H100 capture's fastest step was 323 ms with far
 more exposed NCCL (43% vs 21%): IB collective exposure is highly variable step-to-step, unlike GB300's deterministic NVLink.)*
 
-| exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj fastest step, D256) | Our GB300 (nj step 153, **D128**) |
+| exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj step 159, D256) | Our GB300 (nj step 153, **D128**) |
 |---|---:|---:|---:|
 | `hstu fwd/bwd` (attention) | **43.1%** | 33.7% | 18.5% |
 | `gemm / uvqk` | 17.9% | 14.7% | 9.2% |
@@ -336,7 +338,7 @@ exposed split shows what fills the rest:
 H100 from `figs-h100-jag-timeline` (fastest step 94 ms). With the correct H100 sqlite the (B) picture flips: H100-jagged is now
 **comms-dominated**, not compute-heavy — the short step does little compute, so the fixed IB collectives loom to 43% (the §5.2(A) variance).)*
 
-| exposed, % of the fastest step | Our H100 (fastest step, D256, jagged) | Our GB300 (step 155, **D128**, jagged) |
+| exposed, % of the fastest step | Our H100 (step 153, D256, jagged) | Our GB300 (step 155, **D128**, jagged) |
 |---|---:|---:|
 | `hstu fwd/bwd` (attention) | 17.1% | 6.4% |
 | `gemm / uvqk` | 7.5% | 1.2% |

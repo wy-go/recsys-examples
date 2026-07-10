@@ -13,7 +13,7 @@ HERE=os.path.dirname(os.path.abspath(__file__)); FIG=os.path.join(HERE,"..","fig
 # inner value per grouping + outer leaf splits (gemm_sub, nccl_sub). % of fastest step.
 # Jagged runs only (H100 + GB300); upstream panel intentionally omitted — see §2.2 (A) for the upstream-matched comparison.
 DATA={
-  "Our H100 · fastest step · D256 (jagged)": {   # figs-h100-jag-timeline sqlite; EXACT gemm split; comms-dominated on the short step (NCCL 43%)
+  "Our H100 · step 153 · D256 (jagged)": {   # figs-h100-jag-timeline sqlite; EXACT gemm split; comms-dominated on the short step (NCCL 43%)
     "attention":17.14,"gemm":10.25,"elem":11.70,"embedding":0.98,"idle":14.60,"nccl":43.58,"other":1.61,"overlap":0.06,
     "gemm_sub":{"UVQK":7.53,"PROJ":2.24,"G-O":0.48},"nccl_sub":{"N-E":43.32,"N-O":0.26}},
   "Our GB300 · step 155 · D128 (jagged)": {  # exp4_caching_hr jagged capture (branch mislabeled 'exp2'); gemm EXACT per-kernel innermost-NVTX from sqlite (short seq -> MLP dominates the tiny exposed gemm)
