@@ -279,7 +279,9 @@ avg item length ≈ 491, so effective `T` ≈ 983 vs the non-jagged 4,096; **not
 | Median achieved FLOPS/GPU | 113.6 | 118.3 |
 | Median MFU/GPU | **11.49%** | **4.73%** |
 
-*Jagged keeps the real (short) sequence lengths, so FLOPs/step fall ~4× and MFU with them.*
+*Jagged keeps the real (short) sequence lengths, so FLOPs/step fall ~4× and MFU with them — and it hits GB300 harder than
+H100: GB300's MFU drops to **4.73%** (only ~30% of its non-jagged 15.84%) vs H100's **11.49%** (~68% of 16.86%), because
+short sequences underfill GB300's fast compute (idle 55%, §5.2(B)) — narrowing its throughput lead from ~4.8× to ~2.1×.*
 
 **Picking a platform.** At near-identical MFU (16.86% vs 15.84%), GB300 runs the same ~131k-token step in **80.5 ms vs
 H100's 383 ms — ≈4.8× the token throughput** (2.4× the achieved TFLOPS/GPU), but only at the Blackwell-forced **D128**
