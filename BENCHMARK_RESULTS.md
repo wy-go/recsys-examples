@@ -284,6 +284,9 @@ Two views:
    **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't inflate `idle`.
 2. **Raw kernel-time-sum** (secondary): each kernel's full GPU time summed — double-counts overlap, *not* upstream-comparable.
 
+> **Raw GB300 timelines:** the node-0 (4-GPU) Nsight Systems captures behind these breakdowns are in
+> [`figures/nsys/`](figures/nsys/) — `gb300_nonjagged.nsys-rep` and `gb300_jagged.nsys-rep` (open in the Nsight Systems GUI ≥ 2026.1.3).
+
 **(A) Non-jagged.**
 
 ![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
