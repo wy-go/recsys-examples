@@ -31,6 +31,10 @@ nsys stats --report cuda_gpu_trace    --format csv --output out/gputrace "$REP" 
 nsys export --type sqlite --force-overwrite true --output out/rep.sqlite "$REP"   # step windows + kernel→NVTX map
 ```
 
+`nsys_benchmark_entry.sh` packages exactly these capture steps into one on-node script (arch auto-detected
+`aarch64→gb300 / x86_64→h100`, every knob env-overridable, standard `NNODES`/`NODE_RANK`/`MASTER_ADDR` for
+multi-node). It's optional — the commands above are the whole capture; the script just runs them for you.
+
 ## 2. Analyze (this directory)
 
 | Doc section | What | Script | Inputs |
