@@ -234,7 +234,7 @@ Upstream's benchmark is **H100-only and non-jagged**; we expand it two ways:
 **Key result.** With config **verified matched** (our H100 = upstream's exact **63.89 TFLOP/step**), our **kernels reproduce
 or beat upstream** (attention 42.25% ≥ 38.42%, GEMM 82% > 68%) — yet **e2e is ~2× slower** (16.86% vs 34.54% MFU). Because
 the kernels match or beat upstream, the gap must lie **outside them**: §5.2 shows the same config hits a *different bottleneck on each system* — upstream is
-**compute-bound**, our H100 is **comms-bound** (16 GPUs = 2 DGX over IB, so the collectives sit exposed on the critical
+**compute-bound**, our H100 is **comms-throttled** (16 GPUs = 2 DGX over IB, so the collectives sit exposed on the critical
 path), and our GB300 is **underutilized** (fast, narrow D128 compute under-fills the step — memory-bound elementwise + host-idle). Full per-platform story at the §5 end.
 
 
@@ -323,7 +323,7 @@ more exposed NCCL (43% vs 21%): IB collective exposure is highly variable step-t
 exposed split shows what fills the rest:
 
 - **Upstream H100 — compute-bound.** Compute is **~67%** of the step (attention 43% + GEMM 24%); NCCL barely surfaces at **1.6%**. This is the healthy case — yet still only 34.5% MFU, because `exp4_caching_hr` carries ~27% inherent elementwise + embedding overhead on every platform.
-- **Our H100 — comms-taxed, and variably so.** The *same* kernels, but exposed NCCL is **21% on the cleanest step** (vs upstream's 1.6%) and **43% on a second capture's fastest step** — by busy-time ≈half sparse-embedding all-to-all, ≈half dense-model gradient all-reduce. Our two DGX are IB-joined (§6b's ~26% penalty at 8→16, which GB300's NVL72 avoids), so those collectives sit on the critical path and their exposure swings step-to-step with IB contention (GB300's NVLink is deterministic at 7%). Even the best step's 1.6% → 21% swing displaces compute; on the median step it is worse still — that growing comms tax *is* the 2× e2e gap of §5.1.
+- **Our H100 — comms-throttled, and variably so.** The *same* kernels, but exposed NCCL is **21% on the cleanest step** (vs upstream's 1.6%) and **43% on a second capture's fastest step** — by busy-time ≈half sparse-embedding all-to-all, ≈half dense-model gradient all-reduce. Our two DGX are IB-joined (§6b's ~26% penalty at 8→16, which GB300's NVL72 avoids), so those collectives sit on the critical path and their exposure swings step-to-step with IB contention (GB300's NVLink is deterministic at 7%). Even the best step's 1.6% → 21% swing displaces compute; on the median step it is worse still — that growing comms overhead *is* the 2× e2e gap of §5.1.
 - **Our GB300 — underutilized.** D128 halves the FLOPs and Blackwell runs them ~2.5× faster, so attention + GEMM finish in only **~31%** of the step. Nothing useful replaces them: the rest is **memory-bound elementwise (36%)** — norms/activations that neither shrink at D128 nor use the tensor cores — plus **host-pipeline idle (20%)**. Its fast, narrow compute simply under-fills the step (NCCL is a cheap 7% over NVLink).
 
 | 💡 §5.2(A) Takeaway |
@@ -357,7 +357,7 @@ H100 from `figs-h100-jag-timeline` (fastest step 94 ms). With the correct H100 s
 - **Short jagged step → overhead-dominated on both.** Jagged averages ~491 items (vs 2,048) and attention FLOPs fall
   quadratically (∝ ΣLᵢ²), so compute collapses and the fastest step (H100 94 ms) is dominated by whatever *doesn't* shrink.
 - **H100 → NCCL; GB300 → idle.** On H100 the fixed IB collectives loom to **43% exposed NCCL** (attention only 17%) — the same
-  comms tax as (A), now a bigger share of a much shorter step. On GB300 it's **55.5% idle** (HSTU 6 / GEMM 4 / ELEM 13%) — the
+  comms overhead as (A), now a bigger share of a much shorter step. On GB300 it's **55.5% idle** (HSTU 6 / GEMM 4 / ELEM 13%) — the
   host-embedding stall; its NCCL is a cheap 19% over NVLink. (The old no-sqlite reading had H100-jagged looking compute-heavy — corrected here.)
 - **Inside GEMM, GB300 flips to MLP.** GB300's token-scaled UVQK/PROJ shrink ~9× while the near-fixed MLP head barely moves, so
   the **MLP dominates GB300's tiny exposed GEMM** (G-O 2.1% > UVQK 1.2%); H100 stays UVQK-dominant (7.5% vs G-O 0.5%).
@@ -456,41 +456,46 @@ the same tiles amortize less — a launch/tile-overhead effect, not a FLOP chang
 
 | 💡 §5 Takeaways |
 |:--|
-| *• **Efficient kernels, low e2e MFU — for three different reasons.** e2e MFU = compute's share of the step × per-op efficiency; the kernels are efficient everywhere (42–83%), so the same matched config is **compute-bound** on upstream (compute fills ~67% of the step), **comms-bound** on our H100 (2 DGX over IB), and **underutilized** on our GB300 (fast, narrow D128 compute fills only ~31%). Even upstream reaches just 34.5% MFU — `exp4_caching_hr` carries ~27% elementwise + embedding overhead on every platform.*<br>*• **H100: kernels match, comms is the 2× gap.** Our H100 reproduces upstream's FLOPs (63.89T/step) and matches or beats its kernels (attention **42.25% ≥ 38.42%**; UVQK **83.25% > 66.42%**). Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **exposed NCCL** — over IB the collectives (≈half embedding all-to-all, half dense-gradient all-reduce) sit on the critical path (21–43% of the fastest step depending on IB contention, and more on the median step, §5.2), vs upstream's 1.6% at the same config.*<br>*• **GB300: fast compute, under-filled step.** D128 + Blackwell finish attention+GEMM in ~31% of the step; the rest is **memory-bound elementwise (36%)** — norms/activations that don't use the tensor cores — plus **host-pipeline idle (20%)**. The hardware is starved, not the kernels slow.*<br>*• **GB300 comms scales with step length, not the interconnect.** Exposed NCCL is 7% on the dense step but ~19% on the short jagged step — not a slower interconnect, just a shorter step doing less compute, so the collectives take a bigger share (over the same NVL72 NVLink, §6).*<br>*• **Different attention kernels** — H100's Hopper CUTLASS vs GB300's Blackwell CUTLASS ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)).* |
+| *• **Efficient kernels, low e2e MFU — for three different reasons.** e2e MFU = compute's share of the step × per-op efficiency; the kernels are efficient everywhere (42–83%), so the same matched config is **compute-bound** on upstream (compute fills ~67% of the step), **comms-throttled** on our H100 (2 DGX over IB), and **underutilized** on our GB300 (fast, narrow D128 compute fills only ~31%). Even upstream reaches just 34.5% MFU — `exp4_caching_hr` carries ~27% elementwise + embedding overhead on every platform.*<br>*• **H100: kernels match, comms is the 2× gap.** Our H100 reproduces upstream's FLOPs (63.89T/step) and matches or beats its kernels (attention **42.25% ≥ 38.42%**; UVQK **83.25% > 66.42%**). Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **exposed NCCL** — over IB the collectives (≈half embedding all-to-all, half dense-gradient all-reduce) sit on the critical path (21–43% of the fastest step depending on IB contention, and more on the median step, §5.2), vs upstream's 1.6% at the same config.*<br>*• **GB300: fast compute, under-filled step.** D128 + Blackwell finish attention+GEMM in ~31% of the step; the rest is **memory-bound elementwise (36%)** — norms/activations that don't use the tensor cores — plus **host-pipeline idle (20%)**. The hardware is starved, not the kernels slow.*<br>*• **GB300 comms scales with step length, not the interconnect.** Exposed NCCL is 7% on the dense step but ~19% on the short jagged step — not a slower interconnect, just a shorter step doing less compute, so the collectives take a bigger share (over the same NVL72 NVLink, §6).*<br>*• **Different attention kernels** — H100's Hopper CUTLASS vs GB300's Blackwell CUTLASS ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)).* |
 
 ---
 
 # PART II — OUR OWN MEASUREMENTS (NOT upstream benchmarks)
 
-**§6, §6b, §7 are our own** — NVLink-vs-RDMA all-to-all, the e2e scaling ladder, and the 1B-row scale-up — built with
-**custom launch harnesses and probes we wrote**, with no upstream counterpart.
+**§6–§8 are our own** — NVLink-vs-RDMA all-to-all, the e2e scaling ladder, the 1B-row scale-up, and the scale-study
+reference — built with **custom launch harnesses and probes we wrote**, with no upstream counterpart.
 
 ---
 
 ## 6. Multi-node all-to-all — NVLink-vs-RDMA crossover ✅
-Multi-node via `eu_launch num=N x 4-GPU` + `torchrun`+Arnold-env (no Ray). These runs are **non-training scene
-=> RDMA** (NCCL chose IB cross-worker — `NET/IB` QP-setup lines), so they are the **RDMA baseline**; the
-NVLink-supernode run (scene=training, <=72 = one rack) is the contrast (the comm-fabric crossover).
+Multi-node via `eu_launch num=N × 4-GPU` + `torchrun`/Arnold-env (no Ray). The launch **scene** picks the comm fabric:
+the **default (non-training) scene** routes cross-worker NCCL over **InfiniBand** (`MNNVL 0`, `NET/IB` QP-setup lines) —
+our **RDMA baseline**; **scene=training** with ≤72 cards (one rack) fuses the 4-GPU workers into **one NVL72 NVLink
+supernode** (`MNNVL 1`, `via P2P`) — the contrast. All numbers below are all-to-all bandwidth per rank unless noted.
+(EU GB300 is provisioned as 4-GPU NVLink quads + IB by default, so the RDMA baseline is what you get without asking.)
 
 | GPUs (workers) | scene | e2e TFLOPS (diag, aggregate) | all-to-all (peak) | a2a @512MB/rank |
 |---|---|---|---|---|
 | 8 (2×4) | RDMA | ~2525 | 83 GB/s | 83 |
-| 16 (4×4) | RDMA | ~5000 (~2x) | 81 GB/s @128MB | **47 (degrades)** |
+| 16 (4×4) | RDMA | ~5000 (~2x) | 81 GB/s @128MB | **47** (anomalous — *below* its own 81 @128MB) |
 | 72 (18×4) | RDMA | a2a-only (e2e fell back to nranks 1) | 74.2 GB/s @512MB | 74.2 |
 | **8 (2×4)** | **NVLink (Train)** | a2a-only | **668.5 GB/s @512MB** | **668.5** (MNNVL 1, clique 8) |
 | **16 (4×4)** | **NVLink (Train)** | a2a-only | **659.0 GB/s @512MB** | **659.0** (MNNVL 1, clique 16) |
 | 72 (18×4) | NVLink (Train) | a2a-only | *(pending)* | *(pending)* |
 
-**NVLink-vs-RDMA crossover, all-to-all @512MB/rank:**
+**The crossover (@512MB/rank).** NVLink beats RDMA by **~8× across 8–16 GPU** (668.5/83 = 8.1×; NVLink holds flat ~660).
+The 16-GPU row reads ~14× only because RDMA-16 @512MB = **47** is anomalously low — *below* its own @128MB value (81) and
+the 72-GPU point (74.2), i.e. a single unreplicated outlier, **not** evidence the crossover "widens with scale." Read it
+as a robust **~8×**:
 
 | GPUs | RDMA (scene=trial) | NVLink (scene=Train) | speedup | NVLink evidence |
 |---|---|---|---|---|
 | 8  | 83 GB/s | **668.5 GB/s** | **~8.1×** | MNNVL 1, cliqueSize 8, nNodes 1 |
-| 16 | 47 GB/s (degraded) | **659.0 GB/s** | **~14×** | MNNVL 1, cliqueSize 16, nNodes 1 |
+| 16 | 47 GB/s (anomalous) | **659.0 GB/s** | **~8×** robust (~14× only vs the 47 outlier) | MNNVL 1, cliqueSize 16, nNodes 1 |
 | 36 | — | **147.5 GB/s** | — | MNNVL 1, cliqueSize 36 (full NVLink, 9 nodes) |
 | 72 | 74.2 GB/s | *(capacity-queued)* | — | (gang-sched needs 72 free cards) |
 
-**NVLink a2a does NOT stay flat with scale — a sharp drop at 36 (NVSwitch-tier boundary?):**
+**Beyond 16 GPU the NVLink a2a is non-monotonic — placement-dominated, not an N-scaling law:**
 
 | GPUs (NVLink supernode) | a2a @16MB | @128MB | @512MB |
 |---|---|---|---|
@@ -501,60 +506,37 @@ NVLink-supernode run (scene=training, <=72 = one rack) is the contrast (the comm
 | 56 | 120 | 208 | 225 |
 | 64 | 94 | 479 | **613** |
 
-⚠️ **These ≥36 numbers are PLACEMENT-DOMINATED NOISE, not an N-scaling law — do NOT read a "cliff" into them.**
-@512MB: 8/16 reliably ~660, but 36/48/56/64 = 147/190/225/**613** — wildly non-monotonic, and **all are full NVLink**
-(`cliqueSize = total`, `MNNVL 1`, `via P2P`). Same topology type, 4× spread → the variance is which nodes the
-gang lands on (NVLink path quality per placement), not GPU count. The 64=613 point (≈ the 8/16 level) **falsifies** an
-earlier "cliff at 36 / NVSwitch-tier" reading drawn from single runs. **To characterize fabric scaling you need ≥3 runs
-per size (average out placement); single points ≥36 are unreliable.** What IS robust: every NVLink (Train) run ≫ the
-RDMA (trial) baseline (47–83 GB/s) — that crossover holds regardless of the placement noise.
-`superNodeGpuSize` does NOT split at ≤72 (confirmed 8/16/36/48/56/64). Sched ceiling: 64 places (16-worker gang); 72 stuck.
-**All-to-all IS all-NVLink (channel-level proof, Train runs):** NCCL channel construction shows every cross-worker hop
-(e.g. `3[3] -> 4[0]`, the worker-0/1 boundary) as **`via P2P/MNNVL`** — 8064 such channels at 64-GPU, **`via NET` = 0**
-data channels, `nNodes 1`. So inter-worker traffic is NVLink, not IB (the trial/RDMA runs show `MNNVL 0`+`NET/IB`).
-*Not yet isolated:* the inter-worker *bandwidth* profile (a pairwise P2P matrix / `NCCL_IB_DISABLE=1` control) — the a2a
-number blends intra+inter-worker, so it confirms the *path* is NVLink but doesn't isolate the inter-worker link BW.
-(The earlier "sharp drop" framing was an artifact of single-run sampling —
-points to an **NVL72 NVSwitch-tier boundary**: ≤16 GPU fit one switch group at full per-rank bisection; 36 crosses
-into the multi-group fabric with much lower per-rank all-to-all bisection. (`cliqueSize 36`, `MNNVL 1` confirm it IS
-one coherent NVLink domain — the drop is bandwidth, not loss of NVLink.) Caveat: single a2a microbenchmark; topology
-attribution to confirm. Still, the same code gives flat 660 at 8/16, so the 36 drop is real relative to those.
-**Scheduling note:** 36 GPU (9-worker gang) places readily; 72 (18-worker gang) is capacity-queued — needs all 72 free.
+⚠️ These ≥36-GPU numbers are **placement noise, not a scaling curve.** @512MB, 8/16 GPU reliably hit ~660, but
+36/48/56/64 come out 147/190/225/**613** — wildly non-monotonic, yet **all are full NVLink** (`cliqueSize = total`,
+`MNNVL 1`, `via P2P`). Same topology, 4× spread ⇒ the variance is *which* nodes the gang lands on, not GPU count; the
+64-GPU = 613 point (≈ the 8/16 level) falsifies any "cliff at 36 / NVSwitch-tier" reading drawn from single runs.
+Characterizing fabric scaling would need **≥3 runs per size** to average out placement. What *is* robust: **every
+NVLink run ≫ the RDMA baseline** (47–83 GB/s), so the crossover holds regardless of the noise.
 
-Full NVLink message-size sweep (GB/s): **8-GPU** 274/577/668 · **16-GPU** 181/559/659 (@16/128/512MB).
-The RDMA side **degrades** with scale (83→47 @512MB, 8→16) while NVLink **holds flat ~660 GB/s** — so the
-crossover *widens* with GPU count (~8× at 8 → ~14× at 16).
+**Scheduling ceiling.** `superNodeGpuSize` does not split at ≤72 (confirmed 8/16/36/48/56/64); the scheduler places up
+to **64** (16-worker gang) readily, while **72** (18-worker gang) is capacity-queued — it needs all 72 cards free at
+once. The 72-GPU RDMA all-to-all does run cleanly (**28.0 / 55.4 / 74.2 GB/s** @16/128/512MB, full `nranks 72` comm
+formed and torn down); an earlier 72-GPU failure was a transient gang-init, not a hard cap.
 
-> **How the NVLink scene is obtained (the key infra finding):** the `SimplifiedArnoldJobReq` endpoint
+**Channel-level proof it is all-NVLink (Train runs).** NCCL channel construction shows every cross-worker hop (e.g.
+`3[3] -> 4[0]`, the worker-0/1 boundary) as **`via P2P/MNNVL`** — 8,064 such channels at 64 GPU, **zero `via NET` data
+channels**, `nNodes 1`. Inter-worker traffic is NVLink, not IB (the RDMA runs instead show `MNNVL 0` + `NET/IB`).
+*Not yet isolated:* the inter-worker *bandwidth* alone — the a2a number blends intra- and inter-worker hops, so it
+confirms the NVLink *path* but not the inter-worker link BW (needs a pairwise P2P matrix or an `NCCL_IB_DISABLE=1` control).
+
+**Why it matters:** compute scales ~linearly with GPU count (8→16 ≈ 2525→5000 TFLOPS aggregate) while RDMA all-to-all
+stays bandwidth-bound — precisely the bottleneck the NVLink supernode removes.
+
+> **How the NVLink scene is obtained (key infra finding).** The `SimplifiedArnoldJobReq` endpoint
 > (`/openapi/v1/job_run/launch`) **silently drops `job_type`** (proven: 3 values × 3 JSON-key spellings × proto
-> attributes, all stored `''`). The scene is only settable via the **by-def** path —
-> `launch_job_by_def(LaunchJobRunReq)` with an inline `job_def_version` (our recsys image) + **`job_type="Train"`**,
-> grounded on the bridge-runner pod's own train-job recipe (`cluster_id=2`, `group_ids=[23]`,
-> `queue=…aiarm-ads.infra-guarantee`, `gpuv=NVIDIA_GB300`). With `job_type="Train"` and ≤72 cards = one rack, the
-> scheduler places all workers in a single NVLink supernode — **no `superNodeGpuSize` needed**.
->
-> **Direct NCCL proof (8-GPU Train log), not just bandwidth:** `MNNVL 1`, `cliqueSize 8`, `cliqueRank 0..3`,
-> `comm … nRanks 8 nNodes 1 localRanks 8 MNNVL 1` (the two 4-GPU workers fused into ONE 8-GPU NVLink node),
-> `NVLS multicast available (24 nvls channels)`, shared `fabric UUID`. The matched RDMA (scene=trial) run shows
-> **`MNNVL 0`** + `NET/IB` datapath. So the crossover is `MNNVL 1` (NVLink supernode) vs `MNNVL 0` (RDMA) — and the
-> bandwidth (668 vs 83 GB/s @512MB) corroborates it. (`NET/IB` lines appear in the Train log too, but only as
-> *initialized* devices; with `nNodes 1` the transfers go `via P2P`/NVLink.)
-
-72-GPU all-to-all (RDMA) by message size: **28.0 GB/s @16MB → 55.4 @128MB → 74.2 @512MB** (full `nranks 72` comm formed and torn down cleanly). The earlier 72 failure was a **transient gang-init**, not a hard
-worker cap — the num=18 gang re-ran clean on retry.
-
-**Signal:** compute scales ~linearly (8->16 = 2525->5000 TFLOPS) while RDMA **all-to-all stays bandwidth-bound**
-(8=83, 16=47, 72=74.2 GB/s @512MB — non-monotonic across runs = IB-placement-dependent, never NVLink-class).
-Every multi-worker NCCL line shows **`MNNVL 0`** (Multi-Node NVLink inactive) → these are all the **RDMA baseline**,
-*not* the coherent NVLink supernode. The scene=training rerun gives the NVLink half (see scheduling note below).
-*(EU GB300 access = 4-GPU NVLink quads + IB by default; one rack = 72 cards, NVLink supernode only with scene=training.)*
-
-> **NVLink-supernode launch knob (probed 2026-06-28):** `SimplifiedArnoldJobReq` has **no typed scene/supernode
-> /rack field**; the only place a rack/NVLink-affinity hint can go is the role's free STRING
-> `advanced_config.roles[].scheduling_options` (and `res_scheduling_policy`). `eu_launch` sets neither today, so
-> all our trials default to **non-training → RDMA** (matches `MNNVL 0`). To get the NVLink supernode we must write
-> the correct `scheduling_options` JSON — its exact schema is a portal-side contract (capture it from a portal
-> training-task request, or ByteDance scheduling docs) before wiring it into `eu_launch`.
+> attributes, all stored `''`), so every job through it defaults to non-training → RDMA — which is why our early trials
+> were all `MNNVL 0`. The scene is only settable via the **by-def path**: `launch_job_by_def(LaunchJobRunReq)` with an
+> inline `job_def_version` (our recsys image) + **`job_type="Train"`** (recipe from the bridge pod's own train job —
+> `cluster_id=2`, `group_ids=[23]`, `queue=…aiarm-ads.infra-guarantee`, `gpuv=NVIDIA_GB300`). With `job_type="Train"`
+> and ≤72 cards = one rack, the scheduler places all workers in one NVLink supernode — **no `superNodeGpuSize` needed**.
+> NCCL confirms the fusion: the 8-GPU Train log shows `MNNVL 1`, `cliqueSize 8`, `nRanks 8 nNodes 1 localRanks 8`,
+> `NVLS multicast available`, and a shared `fabric UUID` (the two 4-GPU workers became one 8-GPU NVLink node), versus
+> `MNNVL 0` + `NET/IB` on the matched RDMA run.
 
 ## 6b. E2E scaling ladder — H100 (IB penalty at 16) vs GB300 (NVLink, none) ✅
 Default 50M config, `exp4` (contextual, caching ratio 0.1), **consistent CUTLASS**, global summed TFLOPS. All points
@@ -630,8 +612,8 @@ only pay off when the table is host-backed, ratio<1). So the 1B-resident regime 
 | exp4 +hash-RR | 2680 / 13.40% (−) | 2763 / 13.82% |
 
 The sign flips exactly as the memory model predicts: **resident** → caching is pure overhead (peak is the raw CUTLASS rung);
-**host-backed** → caching is the point (exp3 recovers ~21% of the throughput host-streaming costs, 2305→2783, and becomes
-the peak). This is the regime where DynamicEmb's HBM-cache/prefetch machinery is designed to matter — and the reason the
+**host-backed** → caching is the point (exp3 lifts throughput **+21%**, 2305→2783 — recovering ~94% of the host-streaming
+penalty, 478 of the 507 TFLOPS lost vs the resident 2812 rung — and becomes the peak). This is the regime where DynamicEmb's HBM-cache/prefetch machinery is designed to matter — and the reason the
 GB300 8-GPU resident number (which needs *none* of it) is the more remarkable capacity result. (exp5 prefetch is within
 run-to-run noise on both; the robust contrast is exp2↔exp3.)
 
@@ -640,9 +622,9 @@ run-to-run noise on both; the robust contrast is exp2↔exp3.)
 creation), on every rank. **Dropping ratio 1.0 → 0.5 did not move the failure** (same site, same error): the dynemb VMM
 allocator reserves backing capacity sized to the **table shard**, not the cached fraction, so the per-GPU HBM reservation
 on H100 (80 GB) fails regardless of the HBM-cache ratio. This is a **real H100 capacity wall for the 1B-row model at 32
-GPU**, not a tunable margin. (Not scaled to 64: the failure is at the reservation for the shard `DistributedModelParallel`
-builds, which the ratio was expected to bound and does not — more GPUs shrinks the shard but this is a per-rank VMM
-reservation issue; whether more ranks clear it is being measured — see below.)
+GPU**, not a tunable margin. (Not scaled to 64 yet: the OOM is the per-rank VMM reservation for the shard
+`DistributedModelParallel` builds — more GPUs shrink each shard, so whether extra ranks clear it is exactly what the
+bisection below measures.)
 
 **Least H100 GPUs to run the 1B model (analysis).** The per-GPU value+optimizer reservation is
 `1B × 128 × 4 B × 3 (adam m+v inline) ÷ N` = **1.536 TB ÷ N**, allocated as HBM via `VMMTensor`/`cuMemCreate`.
@@ -715,11 +697,15 @@ production traffic.
 | `nccl(overlap)` | 0.1 | 0.6 | 0.7 | 0.4 |
 | `others` | 0.6 | 1.0 | 1.1 | 0.6 |
 | `overlapped` | 1.5 | 0.7 | 2.1 | 0.1 |
-| **Total** | 100 | 100 | 100 | 100 |
+| **Total (sum of leaves)** | 101.2 | 100.7 | 101.8 | 99.9 |
+
+*The coarse exposed leaves (`exposed_faststep.py` + `exposed_gemm_split.py`) don't perfectly partition the step at these
+scale-study captures — the 1B columns over-attribute by ~1–2 pts (sum 100.7–101.8), so read them as ±2 pt; the §5.2(B)
+baseline closes cleanly (99.9).*
 
 | 💡 Takeaway |
 |:--|
-| *Two effects, isolated. **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **62.5%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (the §7 caching sign-flip, measured cleanly). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 62→47% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **20%** and lifts MFU to **12.88%** — the step becomes **compute-bound** (attn+gemm 33%). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
+| *Two effects, isolated. **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **62.5%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (the §7 caching sign-flip, measured cleanly). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 62→47% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **20%** and lifts MFU to **12.88%** — the step is now **elementwise/compute-bound, no longer idle-bound** (elementwise **34.6%** ≈ attn+gemm **33.7%**, idle just 20% — the same memory-bound-elementwise ceiling as §5's GB300, not a purely compute-bound step). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
 
 Scripts/artifacts: `runtime/scaleup/`; branches `figs-gb300-scaleup-{perf50m-jag2048-exp5, perf1b-jag4096-zipf, perf1b-jag4096-logn}` (each carries the raw **`.nsys-rep.gz`** timeline).
 
