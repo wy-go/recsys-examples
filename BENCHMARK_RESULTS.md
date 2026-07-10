@@ -231,10 +231,11 @@ Upstream's benchmark is **H100-only and non-jagged**; we expand it two ways:
 - **Jagged** — every subsection adds a **(B) jagged** run beside the **(A) non-jagged** one (upstream's method). (B) keeps the
   same S=2048 run's **real variable lengths** (avg item ≈491, effective T≈983) — *not* upstream-comparable, kept as the contrast.
 
-**Key result.** Config **verified matched** (our H100 = **63.9 = upstream's 63.89 TFLOP/step**); our **kernels reproduce or
-beat upstream** (attention 42.25% ≈ 38.42%, GEMM 82% > 68%), yet **e2e is ~2× slower** (16.86% vs 34.54% MFU). It is
-non-kernel overhead: the GPU **stalls on `exp4_caching_hr`'s host-resident embedding pipeline** (§5.2), not the HSTU math.
-Also see the §5 end for the key per-platform (H100/GB300) takeaways.
+**Key result.** With config **verified matched** (our H100 = upstream's exact **63.89 TFLOP/step**), our **kernels reproduce
+or beat upstream** (attention 42.25% ≥ 38.42%, GEMM 82% > 68%) — yet **e2e is ~2× slower** (16.86% vs 34.54% MFU). The gap
+is entirely **non-kernel**: §5.2 shows the same config hits a *different bottleneck on each system* — upstream is
+**compute-bound**, our H100 is **comms-bound** (16 GPUs = 2 DGX over IB, so the collectives sit exposed on the critical
+path), and our GB300 is **idle-bound** (fast D128 compute stalls on the host embedding pipeline). Full per-platform story at the §5 end.
 
 
 #### §5.1 E2E training summary
@@ -257,10 +258,11 @@ Both (A)/(B) no-nsys, median over the steady-state window
 | Median achieved FLOPS/GPU | 341.6 | 166.8 | 396.0 |
 | Median MFU/GPU | 34.54% | **16.86%** | **15.84%** |
 
-**Same config, 2× slower step.** Our H100 reproduces upstream's **FLOP model** (63.89 TFLOP/step) and its kernels (§5.3/§5.4),
-yet the median step is **383.1 ms vs 187.01 ms** → MFU **16.86% ≈ ½ of 34.54%**. §5.2 localizes the gap to **non-kernel overhead —
-GPU idle + elementwise on the `exp4_caching_hr` host-resident embedding pipeline**, not comms (the all-reduce is mostly
-overlapped; H100's exposed split is pending). GB300 (D128, half the FLOPs/step) runs each step in **80.5 ms** at **15.84%**.
+**Same config, 2× slower step.** Our H100 reproduces upstream's FLOP model (63.89 TFLOP/step) and its kernels (§5.3/§5.4),
+yet the median step is **383.1 ms vs 187.01 ms** → MFU **16.86%**, half of 34.54%. Since the kernels match, the gap is
+non-kernel: §5.2 traces it to **exposed NCCL**. Our 16-GPU job spans **2 DGX over IB**, so the gradient all-reduce and
+embedding all-to-all run on the critical path instead of overlapping as they do inside upstream's single NVLink domain.
+GB300 (D128, half the FLOPs/step) runs each step in **80.5 ms** at **15.84%** — bottlenecked differently again (§5.2).
 
 **(B) Jagged** (same `--max_sequence_length 2048` **cap**, but jagged keeps the **real variable lengths** — measured
 avg item length ≈ 491, so effective `T` ≈ 983 vs the non-jagged 4,096; **not** upstream's method):
@@ -276,7 +278,7 @@ avg item length ≈ 491, so effective `T` ≈ 983 vs the non-jagged 4,096; **not
 | Median achieved FLOPS/GPU | 113.6 | 118.3 |
 | Median MFU/GPU | 11.49% | 4.73% |
 
-*Far fewer FLOPs/step → lower MFU.*
+*Jagged keeps the real (short) sequence lengths, so FLOPs/step fall ~4× and MFU with them.*
 
 #### §5.2 GPU-time breakdown
 
@@ -293,9 +295,9 @@ Two views:
 
 ![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
 
-*([upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
-vs our GB300 (our-H100 now filled, `figs-h100-exposed`; its gemm leaves are busy-proportion — the H100 job pushed no sqlite).
-GB300's gemm leaves are the **exact** per-kernel split from its sqlite via `exposed_gemm_split.py`: UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm)*
+*(All three panels on the fastest step; [upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
+is its published reference. GB300's GEMM leaves are the **exact** per-kernel split from its sqlite (`exposed_gemm_split.py`:
+UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed GEMM); H100's leaves are busy-proportion, as that job pushed no sqlite.)*
 
 | exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj, D256) | Our GB300 (nj step 153, **D128**) |
 |---|---:|---:|---:|
@@ -312,10 +314,13 @@ GB300's gemm leaves are the **exact** per-kernel split from its sqlite via `expo
 | `overlapped` | 0.1% | 0.3% | 0.5% |
 | **Total** | 100% | 100% | 100% |
 
-**GB300: idle + elementwise-bound.** D128 shrinks attention+GEMM (together ~30%), leaving the fastest step dominated by
-**elementwise (36.1%) + GPU idle (20.5%)** — the GPU stalling on the `exp4_caching_hr` host-resident embedding pipeline.
-Exposed NCCL is only **7.1%** (the all-reduce is largely overlapped), so GB300 is **input/idle-bound, not comms-bound**.
-Upstream H100 is the opposite — compute-bound (43% attention, 24% GEMM, 3% idle). **Our** H100 is a *third* profile: **NCCL-bound at 43% exposed** (attention 25%, idle 3%) — the 16-GPU = **2 DGX over IB** all-to-all `SendRecv` sits on the critical path (the raw-sum §5.2 story), where upstream's reference shows only 1.6%. So the same non-jagged config is compute-bound (upstream), comms-bound (our IB H100), or idle-bound (our GB300) depending on the interconnect and kernel.
+**Same config, three different bottlenecks.** The exposed split reads straight off the fastest step:
+
+- **Upstream H100 — compute-bound.** Kernels fill the step (43% attention + 24% GEMM, 3% idle); NCCL is only 1.6%, all collectives overlapping inside its single NVLink domain.
+- **Our H100 — comms-bound.** The *same* kernels, but **43.2% of the step is exposed NCCL** (attention falls to 24.7%, idle 2.8%). Our 16 GPUs span **2 DGX over IB**, so the gradient all-reduce and embedding all-to-all sit on the critical path instead of overlapping — the 1.6% → 43% swing *is* the 2× e2e gap of §5.1.
+- **Our GB300 — idle-bound.** D128 halves the compute, so attention+GEMM shrink to ~30% and the step is dominated by **elementwise 36.1% + GPU idle 20.5%**: fast Blackwell kernels finish early and stall on the host embedding pipeline. NCCL is only 7.1%, cheap over the NVL72 NVLink domain.
+
+The bottleneck is set by the interconnect and kernel shape, not the config — compute, comms, or idle.
 
 **(B) Jagged.**
 
@@ -339,14 +344,14 @@ Upstream H100 is the opposite — compute-bound (43% attention, 24% GEMM, 3% idl
 *(GB300 jagged = exp2 capture, exact per-kernel gemm split from its sqlite; H100 jagged = step-153 capture with
 busy-proportion gemm leaves, as we have no H100 jagged sqlite.)*
 
-- **H100 attention 42.8%** ≈ upstream's 43.1% even jagged — the non-jagged (A) column will tighten this once it lands.
-- **GB300's short jagged step is dominated by fixed overheads.** Jagged sequences are short, so the *compute* buckets collapse
-  (HSTU 6 / GEMM 4 / ELEM 13) and the **fixed-cost** pieces loom large: host-embedding **idle 55%** and the fixed-size gradient
-  all-reduce **19% exposed NCCL**. The same effect appears *inside* gemm — UVQK/PROJ (∝ tokens) shrink ~9× while the fixed-size
-  MLP head barely moves, so **MLP dominates the tiny exposed gemm** (G-O 2.1% > UVQK 1.2%).
-- **Length, not fabric.** On the *dense* non-jagged step (§5.2 A) the same GB300 idles 20% and exposes 7% NCCL; the jump to
-  55% / 19% here is purely that the short jagged step does little compute, so fixed idle + all-reduce are a bigger fraction —
-  not a slower fabric (the 16-GPU all-reduce runs over the NVL72 NVLink domain, §6).
+- **Jagged shifts H100 back toward compute.** With short sequences the token-scaled embedding all-to-all shrinks, so H100's
+  exposed NCCL falls 43% → 10% and attention becomes the largest bucket again (42.8%) — the same kernels, now a bigger share of a shorter step.
+- **GB300's short jagged step is all fixed overhead.** Compute collapses (HSTU 6 / GEMM 4 / ELEM 13%), so the fixed-cost
+  pieces dominate: host-embedding **idle 55%** and the fixed-size gradient all-reduce **19% exposed NCCL**. The same shows up
+  inside GEMM — token-scaled UVQK/PROJ shrink ~9× while the fixed MLP head barely moves, so **MLP now dominates the tiny
+  exposed GEMM** (G-O 2.1% > UVQK 1.2%).
+- **Length, not fabric.** On the dense step (A) this same GB300 idles 20% and exposes 7% NCCL; the jump to 55% / 19% is only
+  that a short step does little compute, inflating the fixed idle + all-reduce fractions — not a slower fabric (the all-reduce runs over the NVL72 NVLink domain, §6).
 
 **Raw kernel-time-sum** — each kernel's full GPU busy-time summed by category, **per-step rank0 in ms** (not
 %-normalized, so magnitudes compare directly across cases; overlaps are double-counted, so the Σ exceeds the step wall-time
@@ -365,16 +370,14 @@ and NCCL is over-counted). Categorized from `cuda_gpu_kern_sum` (`kernsum_catego
 | **Σ (summed, ≠ wall)** | **408** | **119** | **66** | **32** |
 | **Wall (clean, overlaps once)** | 387 | 121 | 80 | 63 |
 
-Absolute magnitudes expose what %-normalization hides: H100-nj's NCCL is **237 ms/step** vs GB300-nj's **10 ms** (2-node IB vs
-coherent NVLink), and its busy-sum (408 ms) is **6× GB300's** (66 ms). Comparing Σ to the clean wall tells whether that
-busy-time sits on the critical path:
+The absolute magnitudes confirm the exposed picture. H100-nj spends **237 ms/step in NCCL** vs GB300-nj's **10 ms** — the cost
+of 2 DGX over IB against a coherent NVLink domain — and its total busy-sum (408 ms) is **6× GB300's** (66 ms). Whether that
+time lands on the critical path shows in Σ vs the clean wall:
 
-- **H100 — Σ ≈ wall** (408 vs 387 ms): kernels run nearly *sequentially*, so the 237 ms NCCL is largely **on the critical
-  path** — the `SendRecv` all-to-all waiting on host-resident embedding fetches, *not* fabric transfer and *not* overlapped
-  away (the §5 host-pipeline stall, here as NCCL-wait).
-- **GB300 — Σ < wall** (66 vs 80 ms; 32 vs 63 ms): idle-dominated with little overlap; its D128 kernels are small and NVLink comms cheap.
+- **H100 — Σ ≈ wall** (408 vs 387 ms): kernels run almost sequentially, so the 237 ms NCCL is largely exposed — the comms-bound profile of (A), now in absolute terms.
+- **GB300 — Σ < wall** (66 vs 80 ms; 32 vs 63 ms): overlap is small and the step is idle-dominated; its D128 kernels are cheap and NVLink comms nearly free.
 
-Raw kern-sum stays **not** upstream-comparable (NCCL inflated by wait time, overlap double-counted); the exposed view (§5.2) is the reported one.
+Raw kern-sum is **not** upstream-comparable (overlap double-counted, NCCL includes wait time); the exposed view (§5.2) is the reported one.
 
 #### §5.3 attention forward/backward
 
@@ -398,8 +401,8 @@ at each shape):
 | GB300 (**D128**, C0) | BWD | 11.00T | 9.98 ms | 1101 | **44.05%** | — |
 | GB300 (**D128**, C0) | FWD+BWD | 15.39T | 13.36 ms | 1152 | **46.09%** | — |
 
-**H100 attention matches upstream** (FLOPs 30.83T ≈ 30.88T; F+B **42.25% ≈ upstream 38.42%**, ours ~10% higher). GB300
-D128 attention **46.09%** F+B — half the FLOPs of H100's D256, at a higher absolute rate on the 2500 peak.
+**H100 attention matches upstream** (FLOPs 30.83T ≈ 30.88T; F+B **42.25%**, ~10% above upstream's 38.42%). GB300 at D128
+reaches **46.09%** F+B — half the FLOPs of H100's D256, but a higher absolute rate against the 2,500-TFLOPS peak.
 
 **(B) Jagged, 16-GPU, rank0 fastest step** (same S=2048 run as §5.1/§5.2 (B); FLOPs exact from `cal_hstu_flops` on the real
 per-sequence lengths — attention = trainer's exact total − linear GEMM/other, no effective-`T` approximation):
@@ -413,9 +416,9 @@ per-sequence lengths — attention = trainer's exact total − linear GEMM/other
 | GB300 (**D128**, C0) | BWD | 2.34T | 3.50 ms | 669 | **26.76%** | 44.05% |
 | GB300 (**D128**, C0) | FWD+BWD | 3.28T | 4.46 ms | 734 | **29.37%** | 46.09% |
 
-Jagged runs the same kernels on shorter effective sequences (avg ≈491 vs 2048), so per-op MFU drops (H100 42.25%→36.89%,
-GB300 46.09%→29.37%) — attention is hit hardest because its FLOPs fall quadratically (∝ ΣLᵢ²) while the launch/tile
-overhead per kernel does not.
+Jagged runs the same kernels on shorter effective sequences (avg ≈491 vs 2048), so per-op MFU drops (H100 42.25% → 36.89%,
+GB300 46.09% → 29.37%): attention falls hardest because its FLOPs shrink quadratically (∝ ΣLᵢ²) while the per-kernel
+launch/tile overhead does not.
 
 *Cross-check (exec log): a standalone fixed-shape layer-bench isolating each kernel agreed with the (A) e2e numbers (GB300
 attention fwd 51.8% ≈ 52.1%; backward matches the §2 heatmap Blackwell-D128 bwd 43.4% ≈ 39.8%).*
@@ -437,14 +440,13 @@ GEMM FLOP is **linear in tokens**, so both are exact and match upstream's shapes
 | GB300 (**D128**) | Projection | FWD+BWD | 3.30T | 2.15 ms | 1532 | **61.28%** | — |
 | GB300 (**D128**) | **UVQK+Proj** | FWD+BWD | 16.49T | 9.05 ms | 1821 | **72.86%** | — |
 
-**H100 GEMMs match-or-beat upstream** (FLOPs identical: UVQK 26.41T, Proj 6.60T; projection **78.31% ≈ 74.96%**, UVQK
-**83.25% > 66.42%** — our cu128 nvjet UVQK is faster). Combined **82.21% > upstream 67.97%.** GB300 D128 UVQK **76.47%**,
-projection **61.28%** (small `K`, launch/tile-bound). *(Isolated layer-bench GEMM cross-checks — at a smaller hidden size,
-not shape-matched to the e2e — are in the exec log.)*
+**H100 GEMMs match or beat upstream** (identical FLOPs: UVQK 26.41T, proj 6.60T; projection **78.31% ≈ 74.96%**, UVQK
+**83.25% > 66.42%** — our cu128 nvjet UVQK is faster), combined **82.21% > 67.97%**. GB300 at D128 reaches UVQK **76.47%**,
+projection **61.28%** (small `K`, launch/tile-bound). *(Isolated layer-bench GEMM cross-checks, at a smaller hidden size not shape-matched to the e2e, are in the exec log.)*
 
 | 💡 Takeaway |
 |:--|
-| *Our kernels reproduce/beat upstream — so the §5.1 2× e2e gap is entirely non-kernel overhead (GPU idle on the host-resident embedding pipeline; §5.2).* |
+| *Our kernels reproduce or beat upstream, so the §5.1 2× e2e gap is entirely non-kernel — exposed NCCL on the 2-DGX-over-IB fabric (§5.2), not the HSTU math.* |
 
 **(B) Jagged, 16-GPU, rank0 fastest step** (same S=2048 run as §5.1/§5.2 (B); GEMM FLOP exact = linear in the measured token count):
 
@@ -457,14 +459,14 @@ not shape-matched to the e2e — are in the exec log.)*
 | GB300 (**D128**) | Projection | FWD+BWD | 0.79T | 0.72 ms | 1104 | **44.16%** | 61.28% |
 | GB300 (**D128**) | **UVQK+Proj** | FWD+BWD | 3.96T | 2.56 ms | 1544 | **61.77%** | 72.86% |
 
-Jagged GEMM MFU falls (H100 UVQK 83.25%→63.62%, GB300 76.47%→68.62%): shorter sequences shrink the GEMM `M` dimension, so
-the same tiles are less amortized — a launch/tile-overhead effect, not a FLOP change (GEMM FLOP scales exactly with tokens).
+Jagged GEMM MFU falls (H100 UVQK 83.25% → 63.62%, GB300 76.47% → 68.62%): shorter sequences shrink the GEMM `M` dimension, so
+the same tiles amortize less — a launch/tile-overhead effect, not a FLOP change (GEMM FLOP scales exactly with tokens).
 
 ---
 
 | 💡 §5 Takeaways |
 |:--|
-| *• **Compute reproduces upstream; e2e is overhead-bound.** At S=2048 (verified 63.9 = 63.89 TFLOP/step) our H100 attention **42.25% ≈ 38.42%** and GEMMs match-or-beat upstream (UVQK **83.25% > 66.42%**, proj 78.31% ≈ 74.96%) — identical FLOPs. Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **non-kernel overhead — GPU idle on the host-resident embedding pipeline**, not kernels and not comms (§5.2). Step time barely moves with sequence length — an input-bound signature.*<br>*• **GB300 idles even on its fastest step** — §5.2 puts it at **20.5% idle + 36.1% elementwise** (vs upstream H100's 3% idle): fast Blackwell compute finishes early, then stalls on `exp4_caching_hr`'s host-resident embedding fetches — its speed spent on the host pipeline, not slow kernels.*<br>*• **Comms scales with step length, not fabric** — GB300 exposed NCCL is 7% on the dense step but ~19% on the short jagged step (the fixed-size all-reduce is a bigger fraction as compute shrinks), not a slow fabric (all-reduce over the NVLink domain, §6). Idle + fixed overheads, not the fabric, dominate GB300.*<br>*• **Different attention kernels** — H100's Hopper CUTLASS vs GB300's Blackwell CUTLASS ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)).* |
+| *• **Same config, three bottlenecks.** On the matched non-jagged step the identical workload is **compute-bound** on upstream (single NVLink domain), **comms-bound** on our H100 (2 DGX over IB), and **idle-bound** on our GB300 (host embedding pipeline). The interconnect and kernel shape set the bottleneck, not the config.*<br>*• **H100: kernels match, comms is the 2× gap.** Our H100 reproduces upstream's FLOPs (63.89T/step) and matches or beats its kernels (attention **42.25% ≥ 38.42%**; UVQK **83.25% > 66.42%**). Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **exposed NCCL** — over IB the gradient all-reduce and embedding all-to-all sit on the critical path (43% of the step, §5.2) instead of overlapping as they do in upstream's NVLink domain.*<br>*• **GB300: idle even on its fastest step.** §5.2 puts it at **20.5% idle + 36.1% elementwise** (vs upstream's 3% idle): fast Blackwell kernels finish early, then stall on `exp4_caching_hr`'s host-resident embedding fetches — speed spent on the host pipeline, not slow kernels.*<br>*• **GB300 comms scales with step length, not fabric.** Exposed NCCL is 7% on the dense step but ~19% on the short jagged step — the fixed-size all-reduce is simply a bigger fraction as compute shrinks, over the same NVL72 NVLink domain (§6), not a slower fabric.*<br>*• **Different attention kernels** — H100's Hopper CUTLASS vs GB300's Blackwell CUTLASS ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)).* |
 
 ---
 
