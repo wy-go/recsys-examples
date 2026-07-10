@@ -164,6 +164,8 @@ fused/debug, cutlass at dim≤128, triton for 256). bf16, 1 layer, max_seqlen 40
 ## 4. End-to-end training (synthetic data, progressive optimization)
 Synthetic Zipf data, progressively enabling optimizations. Scales up across subsections: **4a = 1 GPU**, **4b = 16 GPU**. (The detailed 16-GPU perf-analysis vs upstream is in [§5](#user-content-5-detailed-performance-analysis--reproducing-upstream-perf_analysismd).)
 
+> **Sequence config:** §4 is **jagged**, `--max_sequence_length 4096` (items → ~8192 positions). §5 uses **2048** items (~4096 positions, to match upstream), and §5.1(A) is **non-jagged** — so §4 and §5 e2e MFU are *not* directly comparable (different length **and** jaggedness).
+
 ### 4a. Single-GPU (kv128)
 `run_all_experiments_local.sh --benchmark-type=e2e` on **synthetic Zipf data** (not the real datasets of §1), single GPU,
 **kv128** ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)). Shown are exp0→exp2 (baseline → shuffler → CUTLASS), where
