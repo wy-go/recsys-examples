@@ -294,28 +294,28 @@ Two views:
 ![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
 
 *([upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
-vs our GB300; our-H100 panel fills when `figs-h100-exposed` lands. GB300's gemm leaves are the **exact** per-kernel split from
-its sqlite via `exposed_gemm_split.py`: UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm)*
+vs our GB300 (our-H100 now filled, `figs-h100-exposed`; its gemm leaves are busy-proportion — the H100 job pushed no sqlite).
+GB300's gemm leaves are the **exact** per-kernel split from its sqlite via `exposed_gemm_split.py`: UVQK 70.5 / PROJ 21.6 / G-O 8.0% of exposed gemm)*
 
 | exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj, D256) | Our GB300 (nj step 153, **D128**) |
 |---|---:|---:|---:|
-| `hstu fwd/bwd` (attention) | 43.1% | `TBD` | **18.5%** |
-| `gemm / uvqk` | 17.9% | `TBD` | 9.2% |
-| `gemm / projection` | 4.8% | `TBD` | 2.8% |
-| `gemm / others` | 1.0% | `TBD` | 1.0% |
-| `elementwise` | 21.3% | `TBD` | **36.1%** |
-| `embedding op` | 5.7% | `TBD` | 2.7% |
-| `GPU idle` | 3.3% | `TBD` | **20.5%** |
-| `nccl(exposed)` | 1.6% | `TBD` | 7.1% |
-| `nccl(overlap)` | 0.5% | `TBD` | 0.2% |
-| `others` | 0.7% | `TBD` | 1.2% |
-| `overlapped` | 0.1% | `TBD` | 0.5% |
+| `hstu fwd/bwd` (attention) | 43.1% | 24.7% | **18.5%** |
+| `gemm / uvqk` | 17.9% | 7.7% | 9.2% |
+| `gemm / projection` | 4.8% | 1.2% | 2.8% |
+| `gemm / others` | 1.0% | 4.6% | 1.0% |
+| `elementwise` | 21.3% | 13.0% | **36.1%** |
+| `embedding op` | 5.7% | 0.6% | 2.7% |
+| `GPU idle` | 3.3% | 2.8% | **20.5%** |
+| `nccl(exposed)` | 1.6% | **43.2%** | 7.1% |
+| `nccl(overlap)` | 0.5% | 0.3% | 0.2% |
+| `others` | 0.7% | 1.7% | 1.2% |
+| `overlapped` | 0.1% | 0.3% | 0.5% |
 | **Total** | 100% | 100% | 100% |
 
 **GB300: idle + elementwise-bound.** D128 shrinks attention+GEMM (together ~30%), leaving the fastest step dominated by
 **elementwise (36.1%) + GPU idle (20.5%)** — the GPU stalling on the `exp4_caching_hr` host-resident embedding pipeline.
 Exposed NCCL is only **7.1%** (the all-reduce is largely overlapped), so GB300 is **input/idle-bound, not comms-bound**.
-Upstream H100 is the opposite — compute-bound (43% attention, 24% GEMM, 3% idle).
+Upstream H100 is the opposite — compute-bound (43% attention, 24% GEMM, 3% idle). **Our** H100 is a *third* profile: **NCCL-bound at 43% exposed** (attention 25%, idle 3%) — the 16-GPU = **2 DGX over IB** all-to-all `SendRecv` sits on the critical path (the raw-sum §5.2 story), where upstream's reference shows only 1.6%. So the same non-jagged config is compute-bound (upstream), comms-bound (our IB H100), or idle-bound (our GB300) depending on the interconnect and kernel.
 
 **(B) Jagged.**
 
@@ -676,6 +676,60 @@ dominates the table's memory and hence the platform's minimum GPU count.
 > (Zipf-distributed), not a hollow allocation. But the benchmark runs a fixed *small* number of steps with fixed Zipf
 > α=1.05 and untuned LR — fine for **step-time / throughput / MFU**, meaningless for convergence — so **no AUC is claimed
 > at 1B** (α, step count, and LR would all need scaling for a real accuracy run).
+
+---
+
+## 8. Scale-study reference — 1B-row jagged perf, zipf vs lognormal (GB300) ✅
+A reference re-run of the §5 perf analysis at the **scale-study config** (so §5 — 50M rows, non-jagged, S=2048 — isn't the
+only reference point). **GB300, 16 GPU, 1B-row item table, exp5 (caching + prefetch), jagged, `--max_sequence_length 4096`,
+kv128** — swept over **two sequence-length distributions** (zipf, lognormal), plus a **prefetch ablation** of the §5(B) config
+(2048/50M/exp5) to isolate exp4→exp5. Compared against the existing **GB300 jagged max_seq-2048 exp4** baseline (§5.1(B)/§5.2(B)).
+Captured with the scale-study harness (`runtime/scaleup/`).
+
+**Sequence-length distributions** (faithful to `RandomDistribution`, `commons/datasets/hstu_batch.py`):
+![seqlen dist — zipf vs lognormal](figures/seqlen_dist_zipf_vs_lognormal.png)
+
+| seqlen dist | % ≤ 256 items | % at the 4096 cap | mean len |
+|---|---:|---:|---:|
+| **zipf** (default, α=1.2) | **70.5%** (short-dominated) | 17.0% (heavy-tail clamp) | 869 |
+| **lognormal** (mean 2000, std 1000) | **0.0%** (no very-short) | 4.0% | 1963 |
+
+The default **zipf is short-sequence-dominated with a clamped heavy tail**; **lognormal is a realistic hump** (~1400–2000, no
+ultra-short seqs). This changes the per-step token count (and the balanced-shuffler's job), so it's a cleaner stand-in for
+production traffic.
+
+**Results** (median over the steady window; exposed from rank0's fastest step):
+
+| | 50M/2048 **exp5** (ablation) | 1B/4096 zipf | 1B/4096 lognormal |
+|---|---:|---:|---:|
+| mean seq len (items) | ~491 | 869 | 1963 |
+| **median MFU/GPU** | **3.68%** | **8.39%** | **12.88%** |
+| median TFLOPS/GPU | 92 | 210 | 322 |
+| peak HBM/GPU | 25 GB | 103 GB | 127 GB |
+| fastest step (nsys) | 66 ms | 67 ms | 80 ms |
+
+**Exposed GPU-time** (% of the fastest step; §5.2 method — coarse from `exposed_faststep.py`, gemm/nccl leaves from `exposed_gemm_split.py`), with the §5.2(B) GB300 baseline (2048/50M, **exp4** = no prefetch) for the ablation contrast:
+
+| exposed, % of the fastest step | 50M/2048 exp5 | 1B/4096 zipf | 1B/4096 logn | §5.2(B) 2048/50M **exp4** |
+|---|---:|---:|---:|---:|
+| `hstu fwd/bwd` (attention) | 6.6 | 15.0 | 21.4 | 6.4 |
+| `gemm / uvqk` | 2.1 | 3.6 | 6.8 | 1.2 |
+| `gemm / projection` | 0.8 | 1.3 | 1.7 | 0.5 |
+| `gemm / others` | 1.0 | 0.7 | 3.8 | 2.1 |
+| `elementwise` | 13.0 | 18.5 | 34.6 | 12.7 |
+| `embedding op` | 1.5 | 2.2 | 2.6 | 1.3 |
+| **`GPU idle`** | **62.5** | **47.4** | **20.4** | 55.5 |
+| **`nccl(exposed)`** | **11.5** | **9.7** | **6.6** | 19.1 |
+| `nccl(overlap)` | 0.1 | 0.6 | 0.7 | 0.4 |
+| `others` | 0.6 | 1.0 | 1.1 | 0.6 |
+| `overlapped` | 1.5 | 0.7 | 2.1 | 0.1 |
+| **Total** | 100 | 100 | 100 | 100 |
+
+| 💡 Takeaway |
+|:--|
+| *Two effects, isolated. **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **62.5%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (the §7 caching sign-flip, measured cleanly). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 62→47% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **20%** and lifts MFU to **12.88%** — the step becomes **compute-bound** (attn+gemm 33%). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
+
+Scripts/artifacts: `runtime/scaleup/`; branches `figs-gb300-scaleup-{perf50m-jag2048-exp5, perf1b-jag4096-zipf, perf1b-jag4096-logn}` (each carries the raw **`.nsys-rep.gz`** timeline).
 
 ---
 
