@@ -185,30 +185,63 @@ the lift is. The embedding opts exp3–5 add little even at 16 GPU (§4b), and e
 | *The CUTLASS (Blackwell) kernel ~2× the e2e training throughput vs the triton baseline/shuffler (178→368 TFLOPS).* |
 
 ### 4b. Full exp0–5 ladder × head_dim / backend — H100 + GB300 @ 16 GPU
-Three ladders at the §4 config (jagged, contextual), reproducing upstream's
+Three ladders at the §4 config (jagged), reproducing upstream's
 [E2E_BENCHMARK](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/E2E_BENCHMARK.md#2-results)
 exp0–5. Blackwell can't do CUTLASS-256, so GB300's kv256 uses Triton and kv128 uses Blackwell CUTLASS; H100 runs mature Hopper
-CUTLASS at kv256. **Peak global** TFLOPS / MFU (÷16 for per-GPU; via upstream's `analyze_results.py`, which reports the max —
-avg not captured here), `figs-{h100,gb300}-e2elad`.
+CUTLASS at kv256. **Both avg and peak** per-GPU TFLOPS / MFU over the 1000-iter run (warmup dropped), computed by
+[`runtime/nsys_repro/e2e_stats_table.py`](runtime/nsys_repro/e2e_stats_table.py) — matching upstream's own avg+peak columns.
+MFU is vs the bf16 **dense** peak — **989** TF/GPU (H100), **2500** TF/GPU (GB300); the harness logs GB300's MFU against its
+5000 sparse peak, halved here to the dense convention used throughout §5. One fresh single run (2026-07-10),
+`figs-{h100,gb300}-e2elad`.
 
-| rung | **H100: kv256, ctx, Hopper CUTLASS** | **GB300-A: kv256, ctx, Triton** | **GB300-B: kv128, Blackwell CUTLASS** |
-|---|---|---|---|
-| 0 baseline | 1151 TF / 7.27% | 2014 / 5.04% | 1875 / 4.68% |
-| 1 +shuffler | 1654 / 10.46% | 3019 / 7.54% | 2603 / 6.50% |
-| 2 +cutlass | **3620 / 22.88%** ← Hopper **2.2×** | 2997 / 7.50% (no-op: Triton stays) | **5555 / 13.88%** ← Blackwell **2.13×** |
-| 3 +caching | 3629 / 22.93% | 3012 / 7.52% | 5583 / 13.96% |
-| 4 +hash-RR | 3700 / 23.38% | 3022 / 7.56% | 5494 / 13.74% |
-| 5 +prefetch | **3863 / 24.41%** | 2975 / 7.44% | 5371 / 13.42% |
+**H100 — kv256, contextual, Hopper CUTLASS** (peak 989 TF/GPU):
 
-- **The CUTLASS step is the big lift wherever the hardware supports it:** H100 Hopper CUTLASS-256 jumps **10.46 → 22.88%** at
-  exp2 (2.2×), GB300 Blackwell-128 jumps **6.50 → 13.88%** (2.13×). GB300's Triton-256 ladder (A) never gets it (Blackwell can't do CUTLASS-256), stuck at ~7.5%. Upstream's [E2E_BENCHMARK](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/E2E_BENCHMARK.md#2-results) reports a larger **4.00×** from the CUTLASS step — a bigger jump than our ~2.1–2.2× (a different baseline/config on their side).
-- **H100 leads on MFU; GB300 on absolute throughput.** At exp4, H100 CUTLASS-256 reaches **23.38% MFU** (on the 989 peak) vs
-  GB300-B Blackwell-128 **13.74%** (on 2500) — yet GB300's absolute TFLOPS (5494) still exceeds H100's (3700).
-- **Embedding opts (exp3–5) are ~flat on all three:** at 50M rows the all-to-all is already cheap, so caching/hash-RR/prefetch add little — same shape as upstream's "prefetch flat when a2a is small."
+| exp | Avg TF/GPU | Avg MFU | Peak TF/GPU | Peak MFU | Speedup |
+|---|---:|---:|---:|---:|---:|
+| 0 baseline | 69.6 | 7.04% | 71.3 | 7.21% | 1.00× |
+| 1 +shuffler | 97.4 | 9.85% | 104.2 | 10.54% | 1.40× |
+| **2 +cutlass** | **202.4** | **20.47%** | **222.6** | **22.50%** | **2.91×** |
+| 3 +caching | 203.4 | 20.56% | 227.8 | 23.03% | 2.92× |
+| 4 +hash-RR | 205.5 | 20.78% | 229.5 | 23.21% | 2.95× |
+| 5 +prefetch | 207.4 | 20.97% | 235.8 | 23.84% | 2.98× |
 
-*This is the **§4 config (jagged, contextual, default `max_sequence_length`)** — different length **and** jaggedness from §5.1's
-2048 non-jagged, so **not directly comparable** to §5's e2e MFU (that's why H100 here is 23.38%, not §5.1's 16.86%). H100 also
-pays a ~26% IB penalty at 8→16 that GB300's single-NVL72 NVLink domain avoids (§6b).*
+**GB300-A — kv256, contextual, Triton** (peak 2500 TF/GPU; Blackwell can't do CUTLASS-256, so it never leaves Triton):
+
+| exp | Avg TF/GPU | Avg MFU | Peak TF/GPU | Peak MFU | Speedup |
+|---|---:|---:|---:|---:|---:|
+| 0 baseline | 125.0 | 5.00% | 125.8 | 5.03% | 1.00× |
+| 1 +shuffler | 182.3 | 7.29% | 186.0 | 7.44% | 1.46× |
+| 2 +kernel | 183.3 | 7.33% | 187.8 | 7.51% | 1.47× |
+| 3 +caching | 183.9 | 7.36% | 186.9 | 7.48% | 1.47× |
+| 4 +hash-RR | 182.6 | 7.30% | 185.5 | 7.42% | 1.46× |
+| 5 +prefetch | 180.0 | 7.20% | 183.2 | 7.33% | 1.44× |
+
+**GB300-B — kv128, non-contextual, Blackwell CUTLASS** (peak 2500 TF/GPU):
+
+| exp | Avg TF/GPU | Avg MFU | Peak TF/GPU | Peak MFU | Speedup |
+|---|---:|---:|---:|---:|---:|
+| 0 baseline | 113.9 | 4.56% | 116.4 | 4.66% | 1.00× |
+| 1 +shuffler | 159.6 | 6.38% | 164.2 | 6.57% | 1.40× |
+| **2 +cutlass** | **281.6** | **11.26%** | **305.1** | **12.20%** | **2.47×** |
+| 3 +caching | 279.5 | 11.18% | 298.7 | 11.95% | 2.45× |
+| 4 +hash-RR | 278.1 | 11.12% | 299.2 | 11.97% | 2.44× |
+| 5 +prefetch | 272.2 | 10.89% | 290.6 | 11.62% | 2.39× |
+
+- **CUTLASS is the big lift wherever the hardware supports it:** H100 Hopper CUTLASS-256 jumps **10.54 → 22.50% peak MFU** at
+  exp2 (**2.13×**; 2.08× on avg); GB300 Blackwell-128 jumps **6.57 → 12.20%** (**1.86×**; 1.77× avg). GB300's Triton-256 ladder
+  (A) never gets it (Blackwell can't do CUTLASS-256) and stays ~7.4%. Upstream's E2E_BENCHMARK reports a larger **4.00×** CUTLASS
+  step — a bigger jump than ours (a different baseline/config on their side).
+- **H100 leads on MFU; GB300 on absolute throughput.** At exp4, H100 CUTLASS-256 reaches **23.21% peak MFU** (229.5 TF/GPU on
+  the 989 peak) vs GB300-B Blackwell-128 **11.97%** (299.2 TF/GPU on 2500) — yet GB300's absolute rate (299 vs 230 TF/GPU; 4787
+  vs 3672 global) is higher.
+- **Embedding opts (exp3–5) are ~flat on all three:** at 50M rows the all-to-all is already cheap, so caching/hash-RR/prefetch
+  add nothing (slightly negative on GB300) — same shape as upstream's "prefetch flat when a2a is small."
+- **Avg is ~90% of peak on the CUTLASS rungs** (H100 exp2 20.47/22.50 = 91%; GB300-B exp2 11.26/12.20 = 92%) — the run is
+  steady, so peak is representative, not an outlier.
+
+*This is the **§4 config (jagged, default `max_sequence_length`)** — different length **and** jaggedness from §5.1's 2048
+non-jagged, so **not directly comparable** to §5's e2e MFU (that's why H100 here is ~23%, not §5.1's 16.86%). H100 also pays a
+~26% IB penalty at 8→16 that GB300's single-NVL72 NVLink domain avoids (§6b).*
 
 ## 5. Detailed performance analysis — reproducing upstream [`PERF_ANALYSIS.md`](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md)
 > **Specification recap** (exp config, model, dataset, embedding tables, etc.): see upstream [§1](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md#1-spec-recap).
