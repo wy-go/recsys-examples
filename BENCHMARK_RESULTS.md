@@ -67,7 +67,7 @@ Scaling (KuaiRand-27K, DEBUG+triton): **26 → 71 → 184 TFLOPS** across 1→2�
 
 ## 2. HSTU attention-kernel sweep (batch × seqlen heatmaps)
 Upstream `hstu_attn_kernel_benchmark.py`, bf16, **full grid** batch∈{1,2,4,8,16,32,64,128} × seqlen∈{128,256,…,16384}
-(8×8 = 64 cells) on **both** platforms — 10/50 warmup/bench iters. GB300 also gets an **extended 9×9** triton-kv256
+(8×8 = 64 cells) on **both** platforms — **median** over 50 bench iters (after 10 warmup) per cell. GB300 also gets an **extended 9×9** triton-kv256
 sweep (batch≤256 × seqlen≤32768) to probe its extra HBM headroom. Values below are the **peak cell** of each grid;
 peak TFLOPS is the measured global rate, MFU = TFLOPS/peak (GB300 2500, H100 989).
 
@@ -130,7 +130,7 @@ limit — greyed `OVF` in the heatmap); triton has no such limit and fills the w
 
 ## 3. HSTU-layer sweep (fwd+bwd, full layer)
 GB300-adapted exp list (upstream defaults use `native`/TE + dim256-cutlass, both invalid on Blackwell, so:
-fused/debug, cutlass at dim≤128, triton for 256). bf16, 1 layer, max_seqlen 4096, batch 32.
+fused/debug, cutlass at dim≤128, triton for 256). bf16, 1 layer, max_seqlen 4096, batch 32; **median** over 100 bench iters (after 50 warmup).
 
 > **Units note:** `max_seqlen 4096` here is sequence **positions** (the post-interleave length the layer bench takes directly). §4/§5's `--max_sequence_length 2048` counts **items** (S), which the e2e trainer doubles (item+action) + adds C=3 → the *same* T ≈ 4096 positions. The two upstream APIs just use different units — not different lengths.
 
@@ -143,7 +143,7 @@ fused/debug, cutlass at dim≤128, triton for 256). bf16, 1 layer, max_seqlen 40
 | fused_cutlass_64 | FUSED | 615.6 | 594.8 | 601.0 | 24.0% | 1.69× |
 | fused_triton_256 | FUSED | 706.0 | 322.3 | 388.0 | 15.5% | 1.09× |
 
-**H100 cu128** (MFU on 989; measured layer run, `figs-h100-layer`; speedup = FUSED vs DEBUG within each head_dim):
+**H100 cu128** (MFU on 989; measured layer run; speedup = FUSED vs DEBUG within each head_dim):
 
 | exp | layer | fwd TF | bwd TF | e2e TF | e2e MFU | speedup |
 |---|---|---|---|---|---|---|
@@ -190,7 +190,7 @@ Three ladders at the §4 config (jagged), reproducing upstream's
 exp0–5. Blackwell can't do CUTLASS-256, so GB300's kv256 uses Triton and kv128 uses Blackwell CUTLASS; H100 runs mature Hopper
 CUTLASS at kv256. **Both avg and peak** per-GPU TFLOPS / MFU over the 1000-iter run (warmup dropped), computed by
 [`runtime/nsys_repro/e2e_stats_table.py`](runtime/nsys_repro/e2e_stats_table.py) — matching upstream's own avg+peak columns.
-MFU is vs the bf16 **dense** peak — **989** TF/GPU (H100), **2500** TF/GPU (GB300), consistent with §5. `figs-{h100,gb300}-e2elad`.
+MFU is vs the bf16 **dense** peak — **989** TF/GPU (H100), **2500** TF/GPU (GB300), consistent with §5.
 
 **H100 — kv256, contextual, Hopper CUTLASS** (peak 989 TF/GPU):
 
@@ -251,9 +251,7 @@ config, S=2048** (`--max_sequence_length 2048`; `T = 2·S + C = 4099`):
 - **§5.2** (upstream §2.2) — GPU-time breakdown
 - **§5.3 / §5.4** (upstream §2.3 / §2.4) — attention / UVQK+projection GEMM TFLOPS & MFU
 
-§5.1 = no-nsys median (iters 199–999); §5.2–5.4 = rank0's fastest step under nsys. §5.1 uses upstream's own scripts
-(`run_single_experiment_local.sh --nsys`); §5.2–5.4 reconstruct its *unscripted* analysis from `nsys stats` on those runs.
-Scripts, the section→script map, and the measurement conventions (what each metric counts, and why not the tempting-but-wrong alternatives) are in [`runtime/nsys_repro/`](runtime/nsys_repro/).
+§5.1 = no-nsys median (iters 199–999); §5.2–5.4 = rank0's fastest step under nsys (reconstructing upstream's unscripted analysis). Scripts and measurement conventions are in [`runtime/nsys_repro/`](runtime/nsys_repro/).
 
 Upstream's benchmark is **H100-only and non-jagged**; we expand it two ways:
 
@@ -273,8 +271,7 @@ path), and our GB300 is **underutilized** (fast, narrow D128 compute under-fills
 
 Both (A)/(B) no-nsys, median over the steady-state window
 [**iters 199–999**](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md#21-e2e-training-summary)
-(the first ~200 iters are warmup, discarded), sampled every `log_interval=20` iters → **41 logged points**
-((999−199)/20 + 1).
+(the first ~200 iters are warmup, discarded).
 
 **(A) Non-jagged:**
 
@@ -317,22 +314,20 @@ short sequences underfill GB300's fast compute (idle 55%, §5.2(B)).
 #### §5.2 GPU-time breakdown
 
 We report the **exposed** breakdown (upstream's method, directly comparable): charge each GPU instant to the single active
-kernel's category, on **rank0's fastest step** (`exposed_faststep.py`) — measured within one step, so between-step gaps don't
+kernel's category, on **rank0's fastest step** — measured within one step, so between-step gaps don't
 inflate `idle`. In each table column below, **bold** marks the largest exposed bucket and *italic* the second-largest.
 
 > **Raw timelines:** the Nsight Systems captures behind these breakdowns are in
-> [`profiles/`](profiles/) — `{h100,gb300}_{nonjagged,jagged}.nsys-rep` (open in the Nsight Systems GUI ≥ 2026.1.3).
+> [`profiles/`](profiles/) — `{h100,gb300}_{nonjagged,jagged}.nsys-rep`.
 
 **(A) Non-jagged.**
 
 ![non-jagged exposed sunburst on the fastest step — upstream H100 vs our GB300](figures/perf_sunburst_exposed_nj.png)
 
 *(All three panels on the fastest step; [upstream H100](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/figs/gpu_time_breakdown_sunburst.svg)
-is its published reference. Our-H100 panel is from `figs-h100-nj-timeline` — the genuinely-fastest step (235 ms). A second
-H100 capture's fastest step was 323 ms with far
-more exposed NCCL (43% vs 21%): IB collective exposure is highly variable step-to-step, unlike GB300's deterministic NVLink.)*
+is its published reference.)*
 
-| exposed, % of the fastest step | Upstream H100 (step 162, D256) | Our H100 (nj step 159, D256) | Our GB300 (nj step 153, **D128**) |
+| exposed, % of the fastest step | Upstream H100 (D256) | Our H100 (D256) | Our GB300 (**D128**) |
 |---|---:|---:|---:|
 | `hstu fwd/bwd` (attention) | **43.1%** | **33.7%** | 18.5% |
 | `gemm / uvqk` | 17.9% | 14.7% | 9.2% |
@@ -353,7 +348,7 @@ more exposed NCCL (43% vs 21%): IB collective exposure is highly variable step-t
 exposed split shows what fills the rest:
 
 - **Upstream H100 — compute-bound.** Compute is **~67%** of the step (attention 43% + GEMM 24%); NCCL barely surfaces at **1.6%**. This is the healthy case — yet still only 34.5% MFU, because `exp4_caching_hr` carries ~27% inherent elementwise + embedding overhead on every platform.
-- **Our H100 — comms-throttled, and variably so.** The *same* kernels, but exposed NCCL is **21% on the cleanest step** (vs upstream's 1.6%) and **43% on a second capture's fastest step**. The exposed part is **~72% the dense-model gradient all-reduce**, only ~28% the sparse embedding all-to-all ([`exposed_nccl_split.py`](runtime/nsys_repro/exposed_nccl_split.py)). The two carry *comparable total busy-time* (SendRecv ~17% vs AllReduce ~20% of GPU time), but the embedding a2a overlaps compute and **hides**, so what stays **exposed on the critical path is chiefly the dense all-reduce** (which caching/prefetch can't touch, §4b). Our two DGX are IB-joined (§6a's ~26% penalty at 8→16, which GB300's NVL72 avoids), so those collectives sit on the critical path, and their exposure is **highly variable step-to-step** — the §5.2 fastest step (21%, vs upstream's 1.6%) is the *best* case. Across all steps our H100 exposes a **median 25%, up to 59%**; GB300 exposes less over NVLink (**median 19%**) but is **not flat either** (5–35%) — see the variance figure. On both, a step is slow *because* the collective stalls the GPU (**the slower a step, the more NCCL it exposes** — near-linear[^corr]), so on the typical step that sets §5.1's e2e MFU the comms overhead is worse than the fastest step's 21% — and *that* is the 2× e2e gap.
+- **Our H100 — comms-throttled, and variably so.** The *same* kernels, but exposed NCCL is **21% on the cleanest step** (vs upstream's 1.6%) and **43% on a second capture's fastest step**. The exposed part is **~72% the dense-model gradient all-reduce**, only ~28% the sparse embedding all-to-all ([`exposed_nccl_split.py`](runtime/nsys_repro/exposed_nccl_split.py)). The two carry *comparable total busy-time* (SendRecv ~17% vs AllReduce ~20% of GPU time), but the embedding a2a overlaps compute and **hides**, so what stays **exposed on the critical path is chiefly the dense all-reduce** (which caching/prefetch can't touch, §4b). Our two DGX are IB-joined (§6a's ~26% penalty at 8→16, which GB300's NVL72 avoids), so those collectives sit on the critical path. The fastest step (21%) is the *best* case — across all steps H100 exposes a **median 25%** (up to 59%; see the variance figure below), so on the typical step that sets §5.1's e2e MFU the comms overhead is worse, and *that* is the 2× e2e gap.
 - **Our GB300 — underutilized.** D128 halves the FLOPs and Blackwell runs them ~2.5× faster, so attention + GEMM finish in only **~31%** of the step. Nothing useful replaces them: the rest is **memory-bound elementwise (36%)** — norms/activations that neither shrink at D128 nor use the tensor cores — plus **CPU-bound idle (20%)**: kernel-launch dispatch + host-side Python/framework gaps ([`exposed_idle_split.py`](runtime/nsys_repro/exposed_idle_split.py)), because the fast, *many* small D128 kernels outrun the CPU's launch pipeline and the GPU stalls between launches. Its narrow compute simply under-fills the step (NCCL is 7% on this fastest step — ~19% on the typical step, cheaper than H100's IB but not flat, see the variance figure).
 
 | 💡 §5.2(A) Takeaway |
@@ -376,11 +371,10 @@ less than H100's IB, but is **not** the flat "7%" the fastest step suggests. Bot
 
 ![jagged exposed sunburst on the fastest step — our H100 vs our GB300](figures/perf_sunburst_exposed.png)
 
-*(Both from `exp4_caching_hr` captures with **exact** per-kernel GEMM split from sqlite — GB300 from `figs-gb300-jag2048-exp2`,
-H100 from `figs-h100-jag-timeline` (fastest step 94 ms). With the correct H100 sqlite the (B) picture flips: H100-jagged is now
-**comms-dominated**, not compute-heavy — the short step does little compute, so the fixed IB collectives loom to 43% (the §5.2(A) variance).)*
+*(Both from `exp4_caching_hr` captures with **exact** per-kernel GEMM split (H100 fastest step 94 ms). H100-jagged is **comms-dominated**: the short step does little
+compute, so the fixed IB collectives loom to 43% (§5.2(A) variance).)*
 
-| exposed, % of the fastest step | Our H100 (step 153, D256, jagged) | Our GB300 (step 155, **D128**, jagged) |
+| exposed, % of the fastest step | Our H100 (D256, jagged) | Our GB300 (**D128**, jagged) |
 |---|---:|---:|
 | `hstu fwd/bwd` (attention) | *17.1%* | 6.4% |
 | `gemm / uvqk` | 7.5% | 1.2% |
@@ -400,9 +394,9 @@ H100 from `figs-h100-jag-timeline` (fastest step 94 ms). With the correct H100 s
   FLOPs (∝ ΣLᵢ² on the real lengths, §5.3 — a FLOP-model input, not a fit) fall ~4.7× and compute collapses; the fastest step
   (H100 94 ms) is then dominated by whatever *doesn't* shrink. (The observable check is the measured attention *time*, §5.3.)
 - **H100 → NCCL; GB300 → idle.** On H100 the fixed IB collectives loom to **43% exposed NCCL** (attention only 17%) — the same
-  comms overhead as (A), now a bigger share of a much shorter step. On GB300 it's **55.5% idle** — **CPU-launch + host-gap bound**
-  (21% launch + 28% host-side Python/framework gaps): the tiny short-sequence kernels starve the CPU launch pipeline. Its NCCL is a cheap 19% over NVLink.
-- **Inside GEMM, GB300 flips to MLP.** GB300's token-scaled UVQK/PROJ shrink ~9× while the near-fixed MLP head barely moves, so
+  comms overhead as (A), a bigger share of a much shorter step. On GB300 it's **55.5% idle** — **CPU-launch + host-gap bound**
+  (21% launch + 28% host-side Python/framework gaps): the tiny short-sequence kernels starve the CPU launch pipeline. Its NCCL is 19% over NVLink — below H100's 43%, but not negligible.
+- **Inside GEMM, GB300 is MLP-dominated.** GB300's token-scaled UVQK/PROJ shrink ~9× while the near-fixed MLP head barely moves, so
   the **MLP dominates GB300's tiny exposed GEMM** (G-O 2.1% > UVQK 1.2%); H100 stays UVQK-dominant (7.5% vs G-O 0.5%).
 - **The %s reflect sequence length, not the interconnect.** On the dense step (A) this same GB300 idles 20% and exposes 7% NCCL; the
   jump to 55% / 19% is only because a short step does little compute, so the same overheads take a bigger *share* — not a
@@ -415,13 +409,13 @@ H100 from `figs-h100-jag-timeline` (fastest step 94 ms). With the correct H100 s
 #### §5.3 Attention forward/backward
 
 Rank0, fastest step (summed over all 8 HSTU layers).
-Time is **actual kernel busy-time** (`nvtx_kern_sum`, de-duped to rank0 — *not* nsys's projected span, which under-counts
+Time is **actual kernel busy-time** (de-duped to rank0 — *not* nsys's projected span, which under-counts
 multi-stream GEMM → MFU >peak); busy-time is per-step-stable (0.3%), so fastest ≈ every step. FLOPs use recsys
 [`cal_hstu_flops`](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/commons/utils/perf.py) on the **real
 per-sequence lengths** (attention ∝ ΣLᵢ², GEMM linear); for jagged, attention = the trainer's exact total − linear GEMM/other,
-so it's exact (no effective-`T`), computed by `reconstruct_perop_mfu.py`.
+so it's exact (no effective-`T`).
 
-**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream** (`figs-{h100,gb300}-nj2048-nsys`; FLOPs from upstream's
+**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream** (FLOPs from upstream's
 [§1.6 formula](https://github.com/NVIDIA/recsys-examples/blob/main/examples/hstu/training/benchmark/PERF_ANALYSIS.md#16-training-flops-per-step-fwdbwd)
 at each shape):
 
@@ -464,7 +458,7 @@ and same method as §5.3 ([(A) = upstream's §2.4 method](https://github.com/NVI
 GEMM FLOP is **linear in tokens**, so both are exact and match upstream's shapes (§1.6). (In a GEMM `[M×K]·[K×N]`:
 **M** = token count ∝ sequence length, **K** = input dim, **N** = output dim.)
 
-**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream** (S=2048; from `figs-{h100,gb300}-nj2048-nsys`):
+**(A) Non-jagged, 16-GPU, rank0 fastest step — matched to upstream** (S=2048):
 
 | Platform | Op | Phase | FLOPs / GPU | Time | TFLOPS | MFU | Upstream MFU |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -501,7 +495,7 @@ the same tiles amortize less — a launch/tile-overhead effect, not a FLOP chang
 
 | 💡 §5 Takeaways |
 |:--|
-| *• **Efficient kernels, low e2e MFU — for three different reasons.** e2e MFU = compute's share of the step × per-op efficiency; the kernels are efficient everywhere (42–83%), so the same matched config is **compute-bound** on upstream (compute fills ~67% of the step), **comms-throttled** on our H100 (2 DGX over IB), and **underutilized** on our GB300 (fast, narrow D128 compute fills only ~31%). Even upstream reaches just 34.5% MFU — `exp4_caching_hr` carries ~27% elementwise + embedding overhead on every platform.*<br>*• **H100: kernels match, comms is the 2× gap.** Our H100 reproduces upstream's FLOPs (63.89T/step) and matches or beats its kernels (attention **42.25% ≥ 38.42%**; UVQK **83.25% > 66.42%**). Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **exposed NCCL** — over IB the collectives sit on the critical path (21–43% of the fastest step depending on IB contention, and more on the median step, §5.2), and what stays exposed is **chiefly the dense gradient all-reduce** (~72%; the sparse embedding all-to-all mostly overlaps and hides — which is why §4b's caching/prefetch can't help), vs upstream's 1.6% at the same config.*<br>*• **GB300: fast compute, under-filled step.** D128 + Blackwell finish attention+GEMM in ~31% of the step; the rest is **memory-bound elementwise (36%)** — norms/activations that don't use the tensor cores — plus **CPU-bound idle (20%)**: kernel-launch + host-side Python/framework gaps, the fast small kernels outrun the launch pipeline. The hardware is starved by the host, not the kernels slow.*<br>*• **Different attention kernels** — H100's Hopper CUTLASS vs GB300's Blackwell CUTLASS ([Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md)).* |
+| *• **Efficient kernels, low e2e MFU — for three different reasons.** e2e MFU = compute's share of the step × per-op efficiency; the kernels are efficient everywhere (42–83%), so the same matched config is **compute-bound** on upstream (compute fills ~67% of the step), **comms-throttled** on our H100 (2 DGX over IB), and **underutilized** on our GB300 (fast, narrow D128 compute fills only ~31%). Even upstream reaches just 34.5% MFU — `exp4_caching_hr` carries ~27% elementwise + embedding overhead on every platform.*<br>*• **H100: kernels match, comms is the 2× gap.** Our H100 reproduces upstream's FLOPs (63.89T/step) and matches or beats its kernels (attention **42.25% ≥ 38.42%**; UVQK **83.25% > 66.42%**). Yet e2e is **~2× slower** (16.86% vs 34.54% MFU, 383 vs 187 ms): the extra ~200 ms is **exposed NCCL** — over IB the collectives sit on the critical path (21–43% of the fastest step depending on IB contention, and more on the median step, §5.2), and what stays exposed is **chiefly the dense gradient all-reduce** (~72%; the sparse embedding all-to-all mostly overlaps and hides — which is why §4b's caching/prefetch can't help), vs upstream's 1.6% at the same config.*<br>*• **GB300: fast compute, under-filled step.** D128 + Blackwell finish attention+GEMM in ~31% of the step; the rest is **memory-bound elementwise (36%)** — norms/activations that don't use the tensor cores — plus **CPU-bound idle (20%)**: kernel-launch + host-side Python/framework gaps, the fast small kernels outrun the launch pipeline. The hardware is starved by the host, not the kernels slow.* |
 
 ---
 
@@ -513,7 +507,7 @@ reference — built with **custom launch harnesses and probes we wrote**, with n
 ---
 
 ## 6. Multi-node scaling & interconnect — H100 IB vs GB300 NVL72
-Two views of the same question — does throughput scale across nodes, and how fast is the cross-node fabric: the **e2e scaling ladder** (6a) on real training, and the **all-to-all bandwidth** crossover (6b) on a microbenchmark, with the infra recipe for the NVLink supernode (6c).
+Two views of the same question — does throughput scale across nodes, and how fast is the cross-node fabric: the **e2e scaling ladder** (6a) on real training, and the **all-to-all bandwidth** crossover (6b) on a microbenchmark.
 
 ### 6a. E2E scaling ladder — H100 (75% efficiency at 16 GPU, IB) vs GB300 (flat ~99% over NVLink)
 Default 50M config, `exp4` (contextual, caching ratio 0.1), **consistent CUTLASS**, global summed TFLOPS. All points
@@ -524,7 +518,7 @@ the 4-GPU baseline) makes the contrast apples-to-apples across the two platforms
 
 The underlying numbers (global TFLOPS, MFU, and scaling efficiency[^eff]):
 
-**H100 — exp4, CUTLASS-contextual** (MFU on 989; `figs-h100-scale{4,8,16}`):
+**H100 — exp4, CUTLASS-contextual** (MFU on 989):
 
 | GPUs | H100 topology | global TFLOPS | MFU (÷world) | efficiency[^eff] |
 |---|---|---:|---:|---:|
@@ -532,8 +526,7 @@ The underlying numbers (global TFLOPS, MFU, and scaling efficiency[^eff]):
 | 8 | 1 node · NVLink | 2662.53 | 33.65% | 101% |
 | **16** | **2 nodes · InfiniBand** | **3922.64** | **24.79%** | **75%** |
 
-**GB300 — same exp4** (contextual → Triton, since Blackwell CUTLASS can't do contextual, [Issue #4]), scale 4→32 (MFU on 2500;
-`figs-gb300-scale{4,8,16,32}`). GB300 is provisioned as **4-GPU worker slices of one NVL72**, so every step stays on the same
+**GB300 — same exp4** (contextual → Triton, since Blackwell CUTLASS can't do contextual, [Issue #4]), scale 4→32 (MFU on 2500). GB300 is provisioned as **4-GPU worker slices of one NVL72**, so every step stays on the same
 NVL72 NVLink/NVSwitch fabric — there is **no inter-node IB** (unlike H100, where 16 GPU = 2 physical DGX nodes over IB):
 
 | GPUs | GB300 provisioning | global TFLOPS | MFU (÷world) | efficiency[^eff] |
@@ -552,7 +545,6 @@ Multi-node via `eu_launch num=N × 4-GPU` + `torchrun`/Arnold-env (no Ray). The 
 the **default (non-training) scene** routes cross-worker NCCL over **InfiniBand** (`MNNVL 0`, `NET/IB` QP-setup lines) —
 our **RDMA baseline**; **scene=training** with ≤72 cards (one rack) fuses the 4-GPU workers into **one NVL72 NVLink
 supernode** (`MNNVL 1`, `via P2P`) — the contrast. All numbers below are all-to-all bandwidth per rank; the a2a bandwidth **is** the measurement here.[^diag]
-(EU GB300 is provisioned as 4-GPU NVLink quads + IB by default, so the RDMA baseline is what you get without asking.)
 
 | GPUs (workers) | scene | a2a **peak** (GB/s @ its best msg size) | a2a @ **512 MB**/rank[^a2apt] |
 |---|---|---|---|
@@ -573,7 +565,7 @@ The 16-GPU row reads ~14× only because RDMA-16 @512MB = **47** is anomalously l
 the 72-GPU point (74.2), i.e. a single unreplicated outlier, **not** evidence the crossover "widens with scale." Read it
 as a robust **~8×**:
 
-| GPUs | RDMA (scene=trial) | NVLink (scene=Train) | speedup | NVLink evidence |
+| GPUs | RDMA (default scene) | NVLink (`job_type=Train`) | speedup | NVLink evidence |
 |---|---|---|---|---|
 | 8  | 83 GB/s | **668.5 GB/s** | **~8.1×** | MNNVL 1, cliqueSize 8, nNodes 1 |
 | 16 | 47 GB/s (anomalous) | **659.0 GB/s** | **~8×** robust (~14× only vs the 47 outlier) | MNNVL 1, cliqueSize 16, nNodes 1 |
@@ -586,15 +578,17 @@ as a robust **~8×**:
 
 ⚠️ These ≥36-GPU numbers are **placement noise, not a scaling curve.** @512MB, 8/16 GPU reliably hit ~660, but
 36/48/56/64 come out 147/190/225/**613** — wildly non-monotonic, yet **all are full NVLink** (`cliqueSize = total`,
-`MNNVL 1`, `via P2P`). Same topology, 4× spread ⇒ the variance is *which* nodes the gang lands on, not GPU count; the
-64-GPU = 613 point (≈ the 8/16 level) falsifies any "cliff at 36 / NVSwitch-tier" reading drawn from single runs.
-Characterizing fabric scaling would need **≥3 runs per size** to average out placement. What *is* robust: **every
-NVLink run ≫ the RDMA baseline** (47–83 GB/s), so the crossover holds regardless of the noise.
+`MNNVL 1`, `via P2P`). Same topology, 4× spread ⇒ the variance is *which* physical nodes the single gang happened to land on, not the GPU
+count. The tempting reading — "bandwidth cliffs at 36, crossing a node/NVSwitch tier" — is **ruled out by the 64-GPU
+point recovering to 613** (≈ the 8/16 level): a real cliff would keep 64 *low*, not send it back up, so the 36–56 dips
+are unlucky single placements, not an N-scaling law. Pinning down a genuine bandwidth-vs-GPU-count curve would take
+**≥3 runs per size** (median over placements) — but that curve isn't a claim this benchmark needs. What *is* robust:
+**every NVLink run ≫ the RDMA baseline** (47–83 GB/s), so the crossover holds regardless of the noise.
 
-**Scheduling ceiling.** `superNodeGpuSize` does not split at ≤72 (confirmed 8/16/36/48/56/64); the scheduler places up
+**EU GB300 scheduling ceiling.** `superNodeGpuSize` does not split at ≤72 (confirmed 8/16/36/48/56/64); the scheduler places up
 to **64** (16-worker gang) readily, while **72** (18-worker gang) is capacity-queued — it needs all 72 cards free at
 once. The 72-GPU RDMA all-to-all does run cleanly (**28.0 / 55.4 / 74.2 GB/s** @16/128/512MB, full `nranks 72` comm
-formed and torn down); an earlier 72-GPU failure was a transient gang-init, not a hard cap.
+formed and torn down).
 
 **Channel-level proof it is all-NVLink (Train runs).** NCCL channel construction shows every cross-worker hop (e.g.
 `3[3] -> 4[0]`, the worker-0/1 boundary) as **`via P2P/MNNVL`** — 8,064 such channels at 64 GPU, **zero `via NET` data
@@ -604,106 +598,15 @@ confirms the NVLink *path* but not the inter-worker link BW (needs a pairwise P2
 
 **Why it matters:** RDMA all-to-all stays bandwidth-bound while compute scales linearly[^diag] — precisely the bottleneck the NVLink supernode removes.
 
-### 6c. Obtaining the NVLink supernode (infra)
 
-> **How the NVLink scene is obtained (key infra finding).** The `SimplifiedArnoldJobReq` endpoint
-> (`/openapi/v1/job_run/launch`) **silently drops `job_type`** (proven: 3 values × 3 JSON-key spellings × proto
-> attributes, all stored `''`), so every job through it defaults to non-training → RDMA — which is why our early trials
-> were all `MNNVL 0`. The scene is only settable via the **by-def path**: `launch_job_by_def(LaunchJobRunReq)` with an
-> inline `job_def_version` (our recsys image) + **`job_type="Train"`** (recipe from the bridge pod's own train job —
-> `cluster_id=2`, `group_ids=[23]`, `queue=…aiarm-ads.infra-guarantee`, `gpuv=NVIDIA_GB300`). With `job_type="Train"`
-> and ≤72 cards = one rack, the scheduler places all workers in one NVLink supernode — **no `superNodeGpuSize` needed**.
-> NCCL confirms the fusion: the 8-GPU Train log shows `MNNVL 1`, `cliqueSize 8`, `nRanks 8 nNodes 1 localRanks 8`,
-> `NVLS multicast available`, and a shared `fabric UUID` (the two 4-GPU workers became one 8-GPU NVLink node), versus
-> `MNNVL 0` + `NET/IB` on the matched RDMA run.
 
 
 [^diag]: A diagnostic e2e *training* run alongside the a2a probe confirmed the multi-worker world forms and compute scales linearly (8→16 GPU ≈ **2525→5000** aggregate TFLOPS, ~2×); at 72-GPU RDMA that training rendezvous failed (`nranks` fell back to 1), so only the a2a bandwidth is valid there. A setup sanity-check, not the measurement.
 [^a2apt]: **512 MB/rank** is the large-message point where all-to-all bandwidth asymptotes to bus bandwidth — the standard comparison size in [`nccl-tests`](https://github.com/NVIDIA/nccl-tests) `alltoall_perf`; smaller messages are latency-bound.
 [^eff]: **Scaling efficiency** = per-GPU throughput at *N* GPUs ÷ per-GPU throughput at the **4-GPU baseline** (equivalently, MFU at *N* ÷ MFU at 4), as a % of ideal linear scaling (100% = the throughput doubled every time the GPU count doubled). It is **cumulative** (vs the 4-GPU baseline), *not* step-to-step, so one number captures the total departure from perfect scaling. The figure and both tables use this single definition.
 
-## 7. Model scale-up — 1B-row embedding table ✅
-Production-scale embedding capacity (the default suite is 50M rows; here **1B rows × 128-dim**, non-contextual kv128
-CUTLASS, adam, seqlen 4096, batch 32/GPU).
-
-| platform | GPUs | ratio | result |
-|---|---|---|---|
-| **GB300** | **8** (2×4) | 1.0 (resident) | ✅ **2806 TF / 14.04% MFU / 350 TF·GPU⁻¹** — 1B table trains **RESIDENT on 8 GPUs** |
-| H100 | 32 (4×8) | 1.0 (resident) | ❌ `cuMemCreate: out of memory` at dynemb `VMMTensor` alloc |
-| H100 | 32 (4×8) | 0.5 (offload) | ❌ **same OOM, same alloc site** — offload did **not** help |
-
-**Memory model** (verified `gin_config_args.py:197`): `global_hbm = item_vocab_capacity × ratio × item_embedding_dim(128)
-× 4 B × multiplier`, sharded ÷world, fp32; adam multiplier = **3** (inline m+v, `trainer/utils.py:43-44`). So 1B × adam ×
-ratio 1.0 = **1.536 TB → 192 GB/GPU @ 8 (fits GB300 284 GB), 48 GB/GPU @ 32 (H100 80 GB)**.
-
-**Full optimization ladder at 1B rows (GB300, 8 GPU resident).** The single point above (2806/14.04%) is the CUTLASS step
-of the same exp0–5 ladder as §4b, now run at **1B rows** (`figs-gb300-ladder1b`, 8 GPU = 4×2, MFU on 2500/÷8):
-
-| step | TFLOPS | MFU | vs baseline |
-|---|---:|---:|---|
-| L0 triton baseline | 1029.9 | 5.14% | 1.00× |
-| L1 +shuffler | 1364.5 | 6.82% | 1.33× |
-| **L2 +cutlass (Blackwell)** | **2812.4** | **14.06%** | **2.73×** |
-| L3 +hash-roundrobin | 2769.4 | 13.84% | 2.69× |
-| L4 +prefetch | 2680.3 | 13.40% | 2.60× |
-
-Same shape as §4b: the **Blackwell CUTLASS step is the dominant lift (2.7×)**, and the **embedding opts (L3/L4) go slightly
-negative** — at ratio 1.0 the whole table is HBM-resident, so caching/prefetch add bookkeeping with nothing to stream (they
-only pay off when the table is host-backed, ratio<1). So the 1B-resident regime is compute-bound, not a2a-bound.
-
-**Resident vs host-backed — the caching sign-flip** (`figs-gb300-ladder1bf`, 8 GPU, exp0–5, exp3–5 host-backed at
-`--ratio 0.1` = only 10% of the 1B table in an HBM LRU cache, the rest streamed from Grace host memory):
-
-| step | resident (ratio 1.0) | host-backed (ratio 0.1) |
-|---|---:|---:|
-| exp2 +cutlass | **2812 / 14.06%** (peak) | 2305 / 11.52% |
-| exp3 +caching | 2769 / 13.84% (−) | **2783 / 13.92%** (peak, +21%) |
-| exp4 +hash-RR | 2680 / 13.40% (−) | 2763 / 13.82% |
-
-The sign flips exactly as the memory model predicts: **resident** → caching is pure overhead (peak is the raw CUTLASS step);
-**host-backed** → caching is the point (exp3 lifts throughput **+21%**, 2305→2783 — recovering ~94% of the host-streaming
-penalty, 478 of the 507 TFLOPS lost vs the resident 2812 step — and becomes the peak). This is the regime where DynamicEmb's HBM-cache/prefetch machinery is designed to matter — and the reason the
-GB300 8-GPU resident number (which needs *none* of it) is the more remarkable capacity result. (exp5 prefetch is within
-run-to-run noise on both; the robust contrast is exp2↔exp3.)
-
-**H100 capacity wall (diagnosed).** Both H100 runs die identically — `RuntimeError: cuMemCreate: out of memory` inside
-`dynemb/extendable_tensor.py:102 → VMMTensor(...)` during `DistributedModelParallel` sharding (embedding-kernel
-creation), on every rank. **Dropping ratio 1.0 → 0.5 did not move the failure** (same site, same error): the dynemb VMM
-allocator reserves backing capacity sized to the **table shard**, not the cached fraction, so the per-GPU HBM reservation
-on H100 (80 GB) fails regardless of the HBM-cache ratio. This is a **real H100 capacity wall for the 1B-row model at 32
-GPU**, not a tunable margin. (Not scaled to 64 yet: the OOM is the per-rank VMM reservation for the shard
-`DistributedModelParallel` builds — more GPUs shrink each shard, so whether extra ranks clear it is exactly what the
-bisection below measures.)
-
-**Least H100 GPUs to run the 1B model (analysis).** The per-GPU value+optimizer reservation is
-`1B × 128 × 4 B × 3 (adam m+v inline) ÷ N` = **1.536 TB ÷ N**, allocated as HBM via `VMMTensor`/`cuMemCreate`.
-This model is **validated by the GB300 success** (N=8 → 192 GB/GPU, fit in 284 GB); `--ratio` does **not** shrink it.
-- **Naive capacity floor:** 1.536 TB ÷ N ≤ ~70 GB usable → N ≈ **22**.
-- **But measured:** N=32 (48 GB/GPU) already OOMs → the real per-GPU build-time footprint is **~1.5–2× the value-buffer
-  figure**. The extra HBM is the `key_index_map` (NO_EVICTION uses load-factor 0.5 → **2× the row count**,
-  `key_value_table.py:249`), the caching-cache structure, VMM granularity rounding, and CUDA/NCCL/context.
-- **Estimate:** applying that overhead, the true minimum is **> 32 (measured hard bound); ~40 GPUs (≈5 nodes) estimated**,
-  possibly up to ~48. An exact analytic number isn't derivable from the Python layer (the index-map + VMM-granularity
-  terms aren't cleanly sizeable, and there is no H100 *success* point to calibrate the usable ceiling). **Being measured
-  by bisection — 40 GPUs first** (pending).
-
-**Key result.** GB300 trains the 1B-row model **resident on 8 GPUs** (one NVLink node-pair, 350 TF/GPU); **H100 needs
-> 32 GPUs (≈40 estimated) to fit the same model** — the 284 GB vs 80 GB HBM gap, made concrete. Sparse embedding =
-**row-wise model-parallel** (all-to-all lookup); the optimizer state (adam 3× inline vs row-wise Adagrad ~1×, `sharding.py:152`)
-dominates the table's memory and hence the platform's minimum GPU count.
-
-> **Scope of the 1B results — throughput/capacity, NOT accuracy.** Only the table row count was scaled to 1B; the dense
-> model (8 layers / hidden 1024 / 4 heads), embedding width (128), batch (32), and seqlen (4096) are held fixed — the
-> standard way to isolate the embedding-capacity variable. The synthetic generator's item-ID range **auto-tracks** the
-> table (`max_item_id = item_vocab_size_or_capacity`, `trainer/utils.py:133`), so the 1B rows are genuinely exercised
-> (Zipf-distributed), not a hollow allocation. But the benchmark runs a fixed *small* number of steps with fixed Zipf
-> α=1.05 and untuned LR — fine for **step-time / throughput / MFU**, meaningless for convergence — so **no AUC is claimed
-> at 1B** (α, step count, and LR would all need scaling for a real accuracy run).
-
----
-
-## 8. Scale-study reference — 1B-row jagged perf, zipf vs lognormal (GB300) ✅
-A reference re-run of the §5 perf analysis at the **scale-study config** (so §5 — 50M rows, non-jagged, S=2048 — isn't the
+## 8. Scale-study reference — 1B-row jagged perf, zipf vs lognormal (GB300)
+A reference run of the §5 perf analysis at the **scale-study config** (so §5 — 50M rows, non-jagged, S=2048 — isn't the
 only reference point). **GB300, 16 GPU, 1B-row item table, exp5 (caching + prefetch), jagged, `--max_sequence_length 4096`,
 kv128** — swept over **two sequence-length distributions** (zipf, lognormal), plus a **prefetch ablation** of the §5(B) config
 (2048/50M/exp5) to isolate exp4→exp5. Compared against the existing **GB300 jagged max_seq-2048 exp4** baseline (§5.1(B)/§5.2(B)).
@@ -721,50 +624,68 @@ The default **zipf is short-sequence-dominated with a clamped heavy tail**; **lo
 ultra-short seqs). This changes the per-step token count (and the balanced-shuffler's job), so it's a cleaner stand-in for
 production traffic.
 
+**Real-data reference — are these synthetic lengths realistic?** Per-user sequence lengths from the real datasets the
+HSTU / generative-recommenders paper uses (MovieLens ml-1m/ml-20m, KuaiRand Pure/1K), computed from the raw interaction
+logs on the pod (group by user → # interactions, matching the HSTU preprocessor):
+
+![real recsys per-user sequence-length distributions vs the benchmark's synthetic operating points](figures/perf_realdata_seqlen.png)
+
+Real per-user sequences are **heavy-tailed and span ~10 to 10⁵**: MovieLens and KuaiRand-Pure peak at 40–100 with tails
+past 1000 (means 53–166, medians 39–96), while KuaiRand-1K's power users run 8k–100k+ (median 8328). The benchmark's
+synthetic operating points (zipf mean 491–869, lognormal 1963) sit **inside that range** — longer than the median
+MovieLens/KuaiRand user but well within the tail, and far below the KuaiRand-1K power-user regime — so the scale-study's
+sequence lengths are realistic-to-long, not contrived. (Amazon reviews, also used by the paper, aren't downloaded on this
+pod, so it's omitted; MovieLens + KuaiRand already bracket the range.) This is **reference context only** — the perf runs
+still use the synthetic generator. Aggregate binned summary + regen script: `runtime/realdata_seqlen.json`,
+`runtime/plot_realdata_seqlen.py`.
+
 **Results** (median over the steady window; exposed from rank0's fastest step):
 
-| | 50M/2048 **exp5** (ablation) | 1B/4096 zipf | 1B/4096 lognormal |
-|---|---:|---:|---:|
-| mean seq len (items) | ~491 | 869 | 1963 |
-| **median MFU/GPU** | **3.68%** | **8.39%** | **12.88%** |
-| median TFLOPS/GPU | 92 | 210 | 322 |
-| peak HBM/GPU | 25 GB | 103 GB | 127 GB |
-| fastest step (nsys) | 66 ms | 67 ms | 80 ms |
+| | §5.2(B) 50M/2048 exp4 (reference) | 50M/2048 exp5 | 1B/4096 zipf | 1B/4096 logn |
+|---|---:|---:|---:|---:|
+| mean seq len (items) | ~491 | ~491 | 869 | 1963 |
+| **median MFU/GPU** | **4.73%** | **3.68%** | **8.39%** | **12.88%** |
+| median TFLOPS/GPU | 118 | 92 | 210 | 322 |
+| peak HBM/GPU | — | 25 GB | 103 GB | 127 GB |
+| fastest step (nsys) | 65 ms | 66 ms | 67 ms | 80 ms |
 
 **Exposed GPU-time** (% of the fastest step; §5.2 method — coarse from `exposed_faststep.py`, gemm/nccl leaves from `exposed_gemm_split.py`), with the §5.2(B) GB300 baseline (2048/50M, **exp4** = no prefetch) for the ablation contrast:
 
-| exposed, % of the fastest step | 50M/2048 exp5 | 1B/4096 zipf | 1B/4096 logn | §5.2(B) 2048/50M **exp4** |
+| exposed, % of the fastest step | §5.2(B) 50M/2048 exp4 (reference) | 50M/2048 exp5 | 1B/4096 zipf | 1B/4096 logn |
 |---|---:|---:|---:|---:|
-| `hstu fwd/bwd` (attention) | 6.6 | 15.0 | 21.4 | 6.4 |
-| `gemm / uvqk` | 2.1 | 3.6 | 6.8 | 1.2 |
-| `gemm / projection` | 0.8 | 1.3 | 1.7 | 0.5 |
-| `gemm / others` | 1.0 | 0.7 | 3.8 | 2.1 |
-| `elementwise` | 13.0 | 18.5 | 34.6 | 12.7 |
-| `embedding op` | 1.5 | 2.2 | 2.6 | 1.3 |
-| **`GPU idle`** | **62.5** | **47.4** | **20.4** | 55.5 |
-| **`nccl(exposed)`** | **11.5** | **9.7** | **6.6** | 19.1 |
-| `nccl(overlap)` | 0.1 | 0.6 | 0.7 | 0.4 |
-| `others` | 0.6 | 1.0 | 1.1 | 0.6 |
-| `overlapped` | 1.5 | 0.7 | 2.1 | 0.1 |
-| **Total (sum of leaves)** | 101.2 | 100.7 | 101.8 | 99.9 |
+| `hstu fwd/bwd` (attention) | 6.4 | 6.6 | 15.0 | 21.4 |
+| `gemm / uvqk` | 1.2 | 2.1 | 3.6 | 6.8 |
+| `gemm / projection` | 0.5 | 0.8 | 1.3 | 1.7 |
+| `gemm / others` | 2.1 | 1.0 | 0.7 | 3.8 |
+| `elementwise` | 12.7 | 13.0 | 18.5 | 34.6 |
+| `embedding op` | 1.3 | 1.5 | 2.2 | 2.6 |
+| **`GPU idle`** | 55.5 | **62.5** | **47.4** | **20.4** |
+| **`nccl(exposed)`** | 19.1 | **11.5** | **9.7** | **6.6** |
+| `nccl(overlap)` | 0.4 | 0.1 | 0.6 | 0.7 |
+| `others` | 0.6 | 0.6 | 1.0 | 1.1 |
+| `overlapped` | 0.1 | 1.5 | 0.7 | 2.1 |
+| **Total (sum of leaves)** | 99.9 | 101.2 | 100.7 | 101.8 |
 
-*The coarse exposed leaves (`exposed_faststep.py` + `exposed_gemm_split.py`) don't perfectly partition the step at these
-scale-study captures — the 1B columns over-attribute by ~1–2 pts (sum 100.7–101.8), so read them as ±2 pt; the §5.2(B)
-baseline closes cleanly (99.9).*
+*The coarse exposed leaves (`exposed_faststep.py` + `exposed_gemm_split.py`) come from independent per-bucket queries
+rather than one exclusive timeline sweep, so slivers where two categories' kernels briefly overlap get double-counted —
+the longer, more-overlapped 1B steps over-attribute by ~1–2 pts (sum 100.7–101.8); read them as ±2 pt. The §5.2(B)
+baseline was recomputed with the exact single-sweep split and closes cleanly (99.9); the 1B columns could be too by
+exporting their sqlite.*
+
+![§8 scale-study GPU-time breakdown — idle collapses 55→20% as sequences lengthen, step goes idle-bound to elementwise/compute-bound](figures/perf_scaleup_breakdown.png)
 
 | 💡 Takeaway |
 |:--|
-| *Two effects, isolated. **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **62.5%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (the §7 caching sign-flip, measured cleanly). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 62→47% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **20%** and lifts MFU to **12.88%** — the step is now **elementwise/compute-bound, no longer idle-bound** (elementwise **34.6%** ≈ attn+gemm **33.7%**, idle just 20% — the same memory-bound-elementwise ceiling as §5's GB300, not a purely compute-bound step). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
+| *Two effects, isolated. **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **62.5%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (caching/prefetch only pay off when the table is host-backed). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 62→47% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **20%** and lifts MFU to **12.88%** — the step becomes **elementwise/compute-bound rather than idle-bound** (elementwise **34.6%** ≈ attn+gemm **33.7%**, idle just 20% — the same memory-bound-elementwise ceiling as §5's GB300, not a purely compute-bound step). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
 
-Scripts/artifacts: `runtime/scaleup/`; branches `figs-gb300-scaleup-{perf50m-jag2048-exp5, perf1b-jag4096-zipf, perf1b-jag4096-logn}` (each carries the raw **`.nsys-rep.gz`** timeline).
+Scripts/artifacts: `runtime/scaleup/`.
 
 ---
 
 ## Caveats
-- **H100 control = cu128 build** (`b5746f44`), folded into §1–§5 and §7. **Build asymmetry:** GB300 arm64/sm_103/cu130/py3.12
+- **H100 control = cu128 build** (`b5746f44`), folded into §1–§5. **Build asymmetry:** GB300 arm64/sm_103/cu130/py3.12
   vs H100 x86/sm_90/cu128 — a hardware **and** CUDA-stack comparison (same v26.05, **same py3.12/torch 2.9.1**). The H100
-  attention grid is now **full 8×8 across cutlass-{256,128,64} + triton-{256,128}** (the matched CUTLASS-D128 gap is filled,
-  §2). Still open on the H100 side: the **1B-row minimum-GPU control** (40-GPU bisection pending, §7).
+  attention grid is **full 8×8 across cutlass-{256,128,64} + triton-{256,128}** (§2).
 - **MFU is on the bf16 dense peaks** (GB300 2500 / H100 989) → cross-platform MFU IS comparable here (raw absolute TFLOPS are
   not — different peaks). Both **TFLOPS and MFU rest on the modeled FLOP count** (backward = forward × 2.5, not hardware-counted;
   MFU = achieved-TFLOPS / peak), so both carry that assumption — comparable to upstream (same model), but step-time / tokens-sec
@@ -778,3 +699,5 @@ Scripts/artifacts: `runtime/scaleup/`; branches `figs-gb300-scaleup-{perf50m-jag
   empirically BS128×SL16384 overflows; ≤BS128×SL8192 runs; bound BS×SL ≥ 2,097,152 at heads4/hd128) — H100 Hopper CUTLASS
   has no such overflow.
 - Per-run keys (backend, kv, contextual, dataset, layer, image digest, seed) are in the trial logs (`log-py312-*` branches).
+
+
