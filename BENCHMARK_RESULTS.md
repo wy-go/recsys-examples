@@ -317,6 +317,13 @@ We report the **exposed** breakdown (upstream's method, directly comparable): ch
 kernel's category, on **rank0's fastest step** — measured within one step, so between-step gaps don't
 inflate `idle`. In each table column below, **bold** marks the largest exposed bucket and *italic* the second-largest.
 
+> ⚠️ **Caveat — the fastest step is a best-case snapshot, not a distribution.** Following upstream, §5.2–5.4 use rank0's
+> *fastest* step. On a fixed (non-jagged) shape that's the cleanest single measurement, but the fastest step is also the
+> *lowest-comms* step, so it **understates the typical exposed NCCL** (our H100 exposes **21%** on the fastest step but a
+> **median 25%**, up to 59%, across steps — the variance figure in §5.2(A)). It's one step, not the run. For the
+> statistically robust treatment — the **jagged breakdown time-weighted over all 80 steps** (not the fastest step), with
+> the per-step real-time composition — **see §8**.
+
 > **Raw timelines:** the Nsight Systems captures behind these breakdowns are in
 > [`profiles/`](profiles/) — `{h100,gb300}_{nonjagged,jagged}.nsys-rep`.
 
@@ -549,41 +556,53 @@ supernode** (`MNNVL 1`, `via P2P`) — the contrast. All numbers below are all-t
 | GPUs (workers) | scene | a2a **peak** (GB/s @ its best msg size) | a2a @ **512 MB**/rank[^a2apt] |
 |---|---|---|---|
 | 8 (2×4) | RDMA | 83 @512MB | 83 |
-| 16 (4×4) | RDMA | 81 @128MB | **47** (anomalous — *below* its own 81 @128MB) |
+| 16 (4×4) | RDMA | 99.4 @512MB | 99.4 |
+| 32 (8×4) | RDMA | 90.6 @512MB | 90.6 |
 | 72 (18×4) | RDMA | 74.2 @512MB | 74.2 |
 | **8 (2×4)** | **NVLink (Train)** | **668.5 @512MB** | **668.5** (MNNVL 1, clique 8) |
 | **16 (4×4)** | **NVLink (Train)** | **659.0 @512MB** | **659.0** (MNNVL 1, clique 16) |
-| 72 (18×4) | NVLink (Train) | *(pending)* | *(pending)* |
+| **32 (8×4)** | **NVLink (Train)** | **651.8 @512MB** | **651.8** (MNNVL 1, clique 32) |
+| 72 (18×4) | NVLink (Train) | *(capacity-queued)* | *(capacity-queued)* |
 
-*Both are `nccl-tests` **bus bandwidth** measured per message size (steady over iterations — not averaged across sizes). The
-**peak** column is the best across the message-size sweep, with the size it peaks at shown (e.g. `@128MB`); the **@512 MB**
-column fixes the message at 512 MB/rank for a like-for-like crossover — so the two differ only when the peak isn't at 512 MB
-(e.g. RDMA-16: peak 81 @128MB, but 47 @512MB).*
+*Both are torch `all_to_all_single` **bus bandwidth** measured per message size (steady over iterations — not averaged across
+sizes; 5 warmup + 20 timed iters, bf16). The **peak** column is the best across the message-size sweep, with the size it
+peaks at shown; the **@512 MB** column fixes the message at 512 MB/rank for a like-for-like crossover.*
 
-**The crossover (@512MB/rank).** NVLink beats RDMA by **~8× across 8–16 GPU** (668.5/83 = 8.1×; NVLink holds flat ~660).
-The 16-GPU row reads ~14× only because RDMA-16 @512MB = **47** is anomalously low — *below* its own @128MB value (81) and
-the 72-GPU point (74.2), i.e. a single unreplicated outlier, **not** evidence the crossover "widens with scale." Read it
-as a robust **~8×**:
+**The crossover (@512MB/rank).** At **power-of-2 GPU counts** NVLink beats RDMA by **~7×** (8: 668.5/83 = 8.1×; 16:
+659/99.4 = 6.6×; 32: 651.8/90.6 = 7.2×). The earlier ~14× "16-GPU" reading was a bad RDMA-16 run (@512MB = 47); a clean
+re-run gives **99.4**, so the honest crossover at 8–32 GPU is **~7×**:
 
-| GPUs | RDMA (default scene) | NVLink (`job_type=Train`) | speedup | NVLink evidence |
+| GPUs (nodes) | RDMA (default scene) | NVLink (`job_type=Train`) | speedup | note |
 |---|---|---|---|---|
-| 8  | 83 GB/s | **668.5 GB/s** | **~8.1×** | MNNVL 1, cliqueSize 8, nNodes 1 |
-| 16 | 47 GB/s (anomalous) | **659.0 GB/s** | **~8×** robust (~14× only vs the 47 outlier) | MNNVL 1, cliqueSize 16, nNodes 1 |
-| 36 | — | **147.5 GB/s** | — | MNNVL 1, cliqueSize 36 (full NVLink, 9 nodes) |
-| 72 | 74.2 GB/s | *(capacity-queued)* | — | (gang-sched needs 72 free cards) |
+| 8 (2)  | 83 GB/s | **668.5 GB/s** | **~8.1×** | pow-2 → full NVLink a2a |
+| 16 (4) | 99.4 GB/s | **659.0 GB/s** | **~6.6×** | pow-2 |
+| 32 (8) | 90.6 GB/s | **651.8 GB/s** | **~7.2×** | pow-2 |
+| 36 (9) | 90.8 GB/s | 153.3 GB/s | **~1.7×** | **non-pow-2 → slow NVLink a2a** (see below) |
+| 48 (12) | 89.7 GB/s | 189.9 GB/s | **~2.1×** | non-pow-2 |
+| 56 (14) | 86.1 GB/s | 228.2 GB/s | **~2.7×** | non-pow-2 |
+| 64 (16) | 87.5 GB/s | **613.0 GB/s** | **~7.0×** | pow-2 → recovers |
+| 72 (18) | 74.2 GB/s | *(capacity-queued)* | — | (gang-sched needs 72 free cards) |
 
-**Beyond 16 GPU, the NVLink a2a jumps around with *placement*, not GPU count — don't read a scaling curve into it:**
+**The NVLink a2a is full only at power-of-2 rank counts — an NCCL all-to-all algorithm effect, not topology or placement:**
 
-![NVLink all-to-all bandwidth vs GPU count — non-monotonic beyond 16 (placement noise, single runs)](figures/perf_a2a_scaling.png)
+![NVLink all-to-all bandwidth vs GPU count — full at power-of-2 counts (8/16/32/64), slower at 36/48/56; single-rack, reproduced](figures/perf_a2a_scaling.png)
 
-⚠️ These ≥36-GPU numbers are **placement noise, not a scaling curve.** @512MB, 8/16 GPU reliably hit ~660, but
-36/48/56/64 come out 147/190/225/**613** — wildly non-monotonic, yet **all are full NVLink** (`cliqueSize = total`,
-`MNNVL 1`, `via P2P`). Same topology, 4× spread ⇒ the variance is *which* physical nodes the single gang happened to land on, not the GPU
-count. The tempting reading — "bandwidth cliffs at 36, crossing a node/NVSwitch tier" — is **ruled out by the 64-GPU
-point recovering to 613** (≈ the 8/16 level): a real cliff would keep 64 *low*, not send it back up, so the 36–56 dips
-are unlucky single placements, not an N-scaling law. Pinning down a genuine bandwidth-vs-GPU-count curve would take
-**≥3 runs per size** (median over placements) — but that curve isn't a claim this benchmark needs. What *is* robust:
-**every NVLink run ≫ the RDMA baseline** (47–83 GB/s), so the crossover holds regardless of the noise.
+@512MB, the NVLink a2a is **full (~610–670 GB/s) at power-of-2 rank counts** — 8/16/32/64 GPU (2/4/8/16 four-GPU nodes)
+hit 668/659/652/**613** — but **drops to ~150–230 at 36/48/56** (9/12/14 nodes). This is **not** placement noise or a
+cross-rack penalty:
+- **All single-rack, full NVLink.** A topology probe (per-rank `nvidia-smi` Fabric `ClusterUUID`) shows every gang —
+  16/32/36/48/56/64 — spans **exactly one NVL72 fabric** (`cliqueSize = total`, `MNNVL 1`); 36/48/56 **and** 64 even
+  landed on the *same* physical rack, yet 64 is fast while 36/48/56 are slow — so the rack isn't the variable.
+- **Reproducible.** Re-running 36/48/56 at full NVLink matched the earlier values within ~4% (147→153, 190→190,
+  225→228), and a third 36-GPU run reproduced again — not a single-run fluke.
+- **It's the all-to-all algorithm.** `all_to_all_single` is bandwidth-optimal (pairwise-exchange) only when the rank
+  count is a **power of 2**; 36/48/56 fall to a slower schedule. RDMA doesn't show it — its a2a is ~75–99 across the
+  board, i.e. the *fast NVLink path* is what's lost, and RDMA never had it.
+
+**Operational consequence:** the NVLink a2a advantage is ~7× at power-of-2 node counts but collapses to **~1.7×** at 36
+GPU (153.3 vs RDMA 90.8) — a training job that lands on a non-power-of-2 node count forfeits most of the NVL72
+all-to-all win. What stays robust: **every power-of-2 NVLink run ≫ the RDMA baseline (~75–99 GB/s)**, so the crossover
+holds where it matters.
 
 **EU GB300 scheduling ceiling.** `superNodeGpuSize` does not split at ≤72 (confirmed 8/16/36/48/56/64); the scheduler places up
 to **64** (16-worker gang) readily, while **72** (18-worker gang) is capacity-queued — it needs all 72 cards free at
@@ -625,17 +644,18 @@ ultra-short seqs). This changes the per-step token count (and the balanced-shuff
 production traffic.
 
 **Real-data reference — are these synthetic lengths realistic?** Per-user sequence lengths from the real datasets the
-HSTU / generative-recommenders paper uses (MovieLens ml-1m/ml-20m, KuaiRand Pure/1K), computed from the raw interaction
-logs on the pod (group by user → # interactions, matching the HSTU preprocessor):
+HSTU / generative-recommenders paper uses (MovieLens ml-1m/ml-20m, KuaiRand Pure/1K, Amazon Books), computed from the raw
+interaction logs (group by user → # interactions, matching the HSTU preprocessor):
 
 ![real recsys per-user sequence-length distributions vs the benchmark's synthetic operating points](figures/perf_realdata_seqlen.png)
 
-Real per-user sequences are **heavy-tailed and span ~10 to 10⁵**: MovieLens and KuaiRand-Pure peak at 40–100 with tails
-past 1000 (means 53–166, medians 39–96), while KuaiRand-1K's power users run 8k–100k+ (median 8328). The benchmark's
-synthetic operating points (zipf mean 491–869, lognormal 1963) sit **inside that range** — longer than the median
-MovieLens/KuaiRand user but well within the tail, and far below the KuaiRand-1K power-user regime — so the scale-study's
-sequence lengths are realistic-to-long, not contrived. (Amazon reviews, also used by the paper, aren't downloaded on this
-pod, so it's omitted; MovieLens + KuaiRand already bracket the range.) This is **reference context only** — the perf runs
+Real per-user sequences are **heavy-tailed and span from ~1 to 10⁵**: at the short end, raw **Amazon Books** reviews are
+mostly single interactions (8.0M reviewers, median 1, mean 2.8 — the paper additionally *k*-core-filters these, dropping
+the single-review mass); **MovieLens** and **KuaiRand-Pure** peak at 40–100 with tails past 1000 (means 53–166, medians
+39–96); and **KuaiRand-1K**'s power users run 8k–100k+ (median 8328). The benchmark's synthetic operating points (zipf
+mean 491–869, lognormal 1963) sit **inside that range** — longer than the median MovieLens/KuaiRand user but well within
+the tail, and far below the KuaiRand-1K power-user regime — so the scale-study's sequence lengths are realistic-to-long,
+not contrived. This is **reference context only** — the perf runs
 still use the synthetic generator. Aggregate binned summary + regen script: `runtime/realdata_seqlen.json`,
 `runtime/plot_realdata_seqlen.py`.
 
@@ -649,47 +669,67 @@ still use the synthetic generator. Aggregate binned summary + regen script: `run
 | peak HBM/GPU | — | 25 GB | 103 GB | 127 GB |
 | fastest step (nsys) | 65 ms | 66 ms | 67 ms | 80 ms |
 
-**Exposed GPU-time** (% of the fastest step; §5.2 method — coarse from `exposed_faststep.py`, gemm/nccl leaves from `exposed_gemm_split.py`), with the §5.2(B) GB300 baseline (2048/50M, **exp4** = no prefetch) for the ablation contrast:
+**Exposed GPU-time** (**% of step, time-weighted aggregate over all 80 steady steps** = Σ leaf-time / Σ step-time — the
+statistically robust number, not a single step; exact single-sweep partition **per step** via
+[`exposed_partition.py`](runtime/nsys_repro/exposed_partition.py) / [`exposed_perstep.py`](runtime/nsys_repro/exposed_perstep.py),
+gemm sub-split by innermost NVTX op). exp5/zipf/logn are the 80-step aggregate; **exp4** is the §5.2(B) fastest-step
+reference[^aggref] (2048/50M, no prefetch) for the ablation contrast:
 
-| exposed, % of the fastest step | §5.2(B) 50M/2048 exp4 (reference) | 50M/2048 exp5 | 1B/4096 zipf | 1B/4096 logn |
+| exposed, % of step (aggregate over 80 steps) | §5.2(B) 50M/2048 exp4 (ref) | 50M/2048 exp5 | 1B/4096 zipf | 1B/4096 logn |
 |---|---:|---:|---:|---:|
-| `hstu fwd/bwd` (attention) | 6.4 | 6.6 | 15.0 | 21.4 |
-| `gemm / uvqk` | 1.2 | 2.1 | 3.6 | 6.8 |
-| `gemm / projection` | 0.5 | 0.8 | 1.3 | 1.7 |
-| `gemm / others` | 2.1 | 1.0 | 0.7 | 3.8 |
-| `elementwise` | 12.7 | 13.0 | 18.5 | 34.6 |
-| `embedding op` | 1.3 | 1.5 | 2.2 | 2.6 |
-| **`GPU idle`** | 55.5 | **62.5** | **47.4** | **20.4** |
-| **`nccl(exposed)`** | 19.1 | **11.5** | **9.7** | **6.6** |
-| `nccl(overlap)` | 0.4 | 0.1 | 0.6 | 0.7 |
-| `others` | 0.6 | 0.6 | 1.0 | 1.1 |
-| `overlapped` | 0.1 | 1.5 | 0.7 | 2.1 |
-| **Total (sum of leaves)** | 99.9 | 101.2 | 100.7 | 101.8 |
+| `hstu fwd/bwd` (attention) | 6.4% | 6.3% | 15.7% | *19.8%* |
+| `gemm / uvqk` | 1.2% | 1.9% | 3.7% | 5.3% |
+| `gemm / projection` | 0.5% | 0.7% | 1.3% | 1.6% |
+| `gemm / others` | 2.1% | 1.1% | 1.2% | 4.8% |
+| `elementwise` | 12.7% | *12.6%* | *19.5%* | **32.6%** |
+| `embedding op` | 1.3% | 1.4% | 2.2% | 2.7% |
+| `GPU idle` | **55.5%** | **63.2%** | **45.4%** | *23.8%* |
+| `nccl(exposed)` | *19.1%* | 11.7% | 9.6% | 7.3% |
+| `nccl(overlap)` | 0.4% | 0.2% | 0.3% | 0.6% |
+| `others` | 0.6% | 0.7% | 1.0% | 1.2% |
+| `overlapped` | 0.1% | 0.0% | 0.1% | 0.2% |
+| **Total** | 99.9% | 99.8% | 100.0% | 99.9% |
 
-*The coarse exposed leaves (`exposed_faststep.py` + `exposed_gemm_split.py`) come from independent per-bucket queries
-rather than one exclusive timeline sweep, so slivers where two categories' kernels briefly overlap get double-counted —
-the longer, more-overlapped 1B steps over-attribute by ~1–2 pts (sum 100.7–101.8); read them as ±2 pt. The §5.2(B)
-baseline was recomputed with the exact single-sweep split and closes cleanly (99.9); the 1B columns could be too by
-exporting their sqlite.*
+[^aggref]: exp4 is carried at its §5.2(B) fastest-step value (that capture wasn't re-analyzed per-step). Its leaves are
+idle/comms-dominated and stable across steps, so aggregate ≈ fastest there — the exp4↔exp5 prefetch contrast (idle 55→63%)
+holds. The aggregate barely moves the exp5/zipf/logn story vs. the fastest step (idle within ±3 pts) *except* it correctly
+recentres the wide comms leaf — see the per-step distribution below.
 
-![§8 scale-study GPU-time breakdown — idle collapses 55→20% as sequences lengthen, step goes idle-bound to elementwise/compute-bound](figures/perf_scaleup_breakdown.png)
+![§8 scale-study GPU-time sunburst — GB300 16-GPU, exposed accounting, 80-step aggregate; idle collapses 55→24% as sequences lengthen](figures/perf_sunburst_scaleup.png)
+
+Because a jagged step's composition varies (each step draws a different sequence-length mix), the table/sunburst above use
+the **time-weighted aggregate over all 80 steps**, not any single step. The per-step, real-time view (absolute ms, run
+order) shows why — and what varies: the **compute bands (HSTU/GEMM/ELEM) are steady** across steps, so the step-to-step
+variation is in the **idle + NCCL(exposed)** bands (host gaps / comms stalls). Slow steps (e.g. zipf's ~step 41–44 spike)
+are slow because those overheads balloon, not because compute grows — which is exactly why the aggregate, not a single
+step, is the right summary:
+
+![§8 jagged per-step GPU-time in absolute ms, run order — compute bands steady; idle + NCCL(exposed) drive the step-to-step variation](figures/perf_scaleup_realtime.png)
 
 | 💡 Takeaway |
 |:--|
-| *Two effects, isolated. **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **62.5%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (caching/prefetch only pay off when the table is host-backed). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 62→47% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **20%** and lifts MFU to **12.88%** — the step becomes **elementwise/compute-bound rather than idle-bound** (elementwise **34.6%** ≈ attn+gemm **33.7%**, idle just 20% — the same memory-bound-elementwise ceiling as §5's GB300, not a purely compute-bound step). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
+| *Two effects, isolated (breakdown = 80-step aggregate). **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **63%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (caching/prefetch only pay off when the table is host-backed). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 63→45% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **24%** and lifts MFU to **12.88%** — the step becomes **elementwise/compute-bound rather than idle-bound** (elementwise **33%** ≈ attn+gemm **31%**, idle just 24% — the same memory-bound-elementwise ceiling as §5's GB300, not a purely compute-bound step). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
 
 Scripts/artifacts: `runtime/scaleup/`.
 
 ---
 
 ## Caveats
+- **Breakdowns (§5.2–5.4) use the fastest step — a best case, not the typical step.** Upstream's method reports rank0's
+  *fastest* step, which is the *lowest-comms* step, so exposed NCCL is understated vs. a typical step (our H100 median
+  **25%** across steps vs. **21%** on the fastest; see §5.2(A)'s variance figure). §8 gives the statistically robust
+  jagged version — the **80-step time-weighted aggregate** (+ per-step real-time composition), not a single step.
 - **H100 control = cu128 build** (`b5746f44`), folded into §1–§5. **Build asymmetry:** GB300 arm64/sm_103/cu130/py3.12
   vs H100 x86/sm_90/cu128 — a hardware **and** CUDA-stack comparison (same v26.05, **same py3.12/torch 2.9.1**). The H100
   attention grid is **full 8×8 across cutlass-{256,128,64} + triton-{256,128}** (§2).
 - **MFU is on the bf16 dense peaks** (GB300 2500 / H100 989) → cross-platform MFU IS comparable here (raw absolute TFLOPS are
   not — different peaks). Both **TFLOPS and MFU rest on the modeled FLOP count** (backward = forward × 2.5, not hardware-counted;
   MFU = achieved-TFLOPS / peak), so both carry that assumption — comparable to upstream (same model), but step-time / tokens-sec
-  are the directly-measured ground truth.
+  are the directly-measured ground truth. The FLOP count is computed on the **actual doubled sequence**, not the
+  `max_sequence_length` config: HSTU interleaves item+action tokens (`hstu_processor.py` sets `seqlen *= 2`), so the S²
+  attention term uses the post-preprocessor length `jd.seqlen` = **2·items + contextual** (≈8192 positions for the 4096-item
+  config), verified via `cal_hstu_flops(seqlens=jd.seqlen)` in `perf.py` (byte-identical to upstream) — no items-vs-positions
+  undercount.
 - **Blackwell kernel limits:** head_dim 256 not supported (→ triton — [Issue #1](upstream_issues/GB300_KERNEL_ISSUES.md));
   **contextual tokens rejected by the Blackwell CUTLASS `fused_hstu_op`** (a hard `raise` —
   [Issue #4](upstream_issues/GB300_KERNEL_ISSUES.md); the **Triton** path *does* run contextual on Blackwell, which is why
