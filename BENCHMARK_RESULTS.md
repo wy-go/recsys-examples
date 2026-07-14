@@ -322,7 +322,7 @@ inflate `idle`. In each table column below, **bold** marks the largest exposed b
 > *lowest-comms* step, so it **understates the typical exposed NCCL** (our H100 exposes **21%** on the fastest step but a
 > **median 25%**, up to 59%, across steps — the variance figure in §5.2(A)). It's one step, not the run. For the
 > statistically robust treatment — the **jagged breakdown time-weighted over all 80 steps** (not the fastest step), with
-> the per-step real-time composition — **see §8**.
+> the per-step real-time composition — **see [§8](#8-scale-study-reference--1b-row-jagged-perf-zipf-vs-lognormal-gb300)**.
 
 > **Raw timelines:** the Nsight Systems captures behind these breakdowns are in
 > [`profiles/`](profiles/) — `{h100,gb300}_{nonjagged,jagged}.nsys-rep`.
@@ -408,6 +408,12 @@ compute, so the fixed IB collectives loom to 43% (§5.2(A) variance).)*
 - **The %s reflect sequence length, not the interconnect.** On the dense step (A) this same GB300 idles 20% and exposes 7% NCCL; the
   jump to 55% / 19% is only because a short step does little compute, so the same overheads take a bigger *share* — not a
   slower interconnect (GB300's NCCL still runs over the cheap NVL72 NVLink, §6).
+- **Verified across all steps, not just the fastest.** Re-running the exact partition over *every* step (H100 160, GB300 80;
+  same 80-step-aggregate method as §8) confirms **both readings hold — and the bottleneck *identity* is rock-steady**: NCCL is
+  the #1 H100 leaf in every step, idle the #1 GB300 leaf in every step. If anything the fastest step is *conservative* for
+  H100 — aggregate exposed NCCL is **47%** (the 43% fastest-step value is a floor; slower long-sequence steps reach ~65%),
+  because longer steps expose *more* of the fixed all-reduce. GB300 aggregate idle is **55.7%** (fastest 55.5% — dead-on,
+  σ≈2.3 across steps). So this jagged breakdown is not fastest-step-biased.
 
 | 💡 §5.2(B) Takeaway |
 |:--|
@@ -689,6 +695,7 @@ reference[^aggref] (2048/50M, no prefetch) for the ablation contrast:
 | `others` | 0.6% | 0.7% | 1.0% | 1.2% |
 | `overlapped` | 0.1% | 0.0% | 0.1% | 0.2% |
 | **Total** | 99.9% | 99.8% | 100.0% | 99.9% |
+| Nsight trace | [`gb300_jagged.nsys-rep`](profiles/gb300_jagged.nsys-rep) | [`scaleup_50m2048_exp5.nsys-rep`](profiles/scaleup_50m2048_exp5.nsys-rep) | [`scaleup_1b4096_zipf.nsys-rep`](profiles/scaleup_1b4096_zipf.nsys-rep) | [`scaleup_1b4096_logn.nsys-rep`](profiles/scaleup_1b4096_logn.nsys-rep) |
 
 [^aggref]: exp4 is carried at its §5.2(B) fastest-step value (that capture wasn't re-analyzed per-step). Its leaves are
 idle/comms-dominated and stable across steps, so aggregate ≈ fastest there — the exp4↔exp5 prefetch contrast (idle 55→63%)
@@ -696,6 +703,11 @@ holds. The aggregate barely moves the exp5/zipf/logn story vs. the fastest step 
 recentres the wide comms leaf — see the per-step distribution below.
 
 ![§8 scale-study GPU-time sunburst — GB300 16-GPU, exposed accounting, 80-step aggregate; idle collapses 55→24% as sequences lengthen](figures/perf_sunburst_scaleup.png)
+
+The outer ring carries the same sub-splits as §5.2 (`exposed_perstep_subsplit.py`): NCCL into **dense/sparse × exposed/overlap**
+and idle into **CPU causes**. Two things hold across the sweep — exposed NCCL is **dense-all-reduce-dominated** (N-Ed ≫
+N-Es, ~2.4–3.7:1; the sparse embedding a2a mostly hides), and idle is **host + kernel-launch bound** (I-host + I-launch
+are the bulk; sync/copy are minor) — the same CPU-starved picture as §5's GB300, here across every scale-study config.
 
 Because a jagged step's composition varies (each step draws a different sequence-length mix), the table/sunburst above use
 the **time-weighted aggregate over all 80 steps**, not any single step. The per-step, real-time view (absolute ms, run

@@ -27,7 +27,7 @@ for ax,(lab,title) in zip(axes,CFG):
     bottom=np.zeros(n)
     for key,_,col in STACK:
         h=series(a,key)/100.0*ms   # % of step -> absolute ms
-        ax.bar(x,h,bottom=bottom,width=1.0,color=col,edgecolor="none",label=_ if ax is axes[0] else None)
+        ax.bar(x,h,bottom=bottom,width=0.82,color=col,edgecolor="none",label=_ if ax is axes[0] else None)
         bottom+=h
     ax.axhline(d["fastest_ms"],ls=":",lw=1,color="#444")
     ax.text(n,d["fastest_ms"],f" fastest {d['fastest_ms']:.0f}ms",fontsize=7.5,color="#444",va="center")

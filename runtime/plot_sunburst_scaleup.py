@@ -2,8 +2,9 @@
 """§8 scale-study GPU-time sunburst — exposed accounting on rank0's fastest step, SAME rings/colours/legend as the
 §5.2 sunbursts (plot_sunburst.py / plot_sunburst_nj.py). One panel per scale-study config: the §5.2(B) exp4 reference,
 the prefetch ablation (exp5), and the 1B sweep over zipf / lognormal sequence lengths. GB300, 16 GPU, jagged.
-gemm split into UVQK/PROJ/G-O (exposed_gemm_split.py); nccl split into exposed/overlap (coarse — not the dense/sparse
-sub-split of §5.2, since these captures use the coarse leaves); idle a single leaf. % of the fastest step.
+gemm split into UVQK/PROJ/G-O (exposed_gemm_split.py); nccl split into dense/sparse × exposed/overlap
+(N-Ed/N-Es/N-Od/N-Os, exposed_perstep_subsplit.py — dense = gradient all-reduce, sparse = embedding all-to-all); idle
+split into CPU causes (I-launch/I-host/I-sync/I-copy/I-oth) — same leaves + shading as the §5.2 sunbursts. 80-step aggregate.
 """
 import os, math
 import matplotlib; matplotlib.use("Agg")
@@ -15,16 +16,20 @@ HERE=os.path.dirname(os.path.abspath(__file__)); FIG=os.path.join(HERE,"..","fig
 DATA={
   "exp4 (ref, fastest) · 50M/2048": {
     "attention":6.4,"gemm":3.8,"elem":12.7,"embedding":1.3,"idle":55.5,"nccl":19.5,"other":0.6,"overlap":0.1,
-    "gemm_sub":{"UVQK":1.2,"PROJ":0.5,"G-O":2.1},"nccl_sub":{"N-E":19.1,"N-O":0.4}},
+    "gemm_sub":{"UVQK":1.2,"PROJ":0.5,"G-O":2.1},"nccl_sub":{"N-Ed":9.91,"N-Es":9.15,"N-Od":0.0,"N-Os":0.44},
+    "idle_sub":{"I-launch":21.01,"I-host":28.07,"I-sync":3.04,"I-copy":2.33,"I-oth":1.09}},
   "exp5 · 50M/2048 (80-step agg)": {
     "attention":6.3,"gemm":3.7,"elem":12.6,"embedding":1.4,"idle":63.2,"nccl":11.9,"other":0.7,"overlap":0.0,
-    "gemm_sub":{"UVQK":1.9,"PROJ":0.7,"G-O":1.1},"nccl_sub":{"N-E":11.7,"N-O":0.2}},
+    "gemm_sub":{"UVQK":1.9,"PROJ":0.7,"G-O":1.1},"nccl_sub":{"N-Ed":8.63,"N-Es":3.03,"N-Od":0.01,"N-Os":0.21},
+    "idle_sub":{"I-launch":23.76,"I-host":30.78,"I-sync":3.38,"I-copy":3.57,"I-oth":1.79}},
   "zipf · 1B/4096 (80-step agg)": {
     "attention":15.7,"gemm":6.2,"elem":19.5,"embedding":2.2,"idle":45.4,"nccl":9.9,"other":1.0,"overlap":0.1,
-    "gemm_sub":{"UVQK":3.7,"PROJ":1.3,"G-O":1.2},"nccl_sub":{"N-E":9.6,"N-O":0.3}},
+    "gemm_sub":{"UVQK":3.7,"PROJ":1.3,"G-O":1.2},"nccl_sub":{"N-Ed":7.58,"N-Es":2.04,"N-Od":0.01,"N-Os":0.27},
+    "idle_sub":{"I-launch":15.88,"I-host":21.83,"I-sync":3.01,"I-copy":3.38,"I-oth":1.40}},
   "lognormal · 1B/4096 (80-step agg)": {
     "attention":19.8,"gemm":11.7,"elem":32.6,"embedding":2.7,"idle":23.8,"nccl":7.9,"other":1.2,"overlap":0.2,
-    "gemm_sub":{"UVQK":5.3,"PROJ":1.6,"G-O":4.8},"nccl_sub":{"N-E":7.3,"N-O":0.6}},
+    "gemm_sub":{"UVQK":5.3,"PROJ":1.6,"G-O":4.8},"nccl_sub":{"N-Ed":5.10,"N-Es":2.14,"N-Od":0.13,"N-Os":0.51},
+    "idle_sub":{"I-launch":8.98,"I-host":9.57,"I-sync":2.39,"I-copy":2.00,"I-oth":0.88}},
 }
 ORDER=["attention","gemm","elem","embedding","idle","nccl","other","overlap"]
 LBL ={"attention":"HSTU","gemm":"GEMM","elem":"ELEM","embedding":"EMB","idle":"IDLE","nccl":"NCCL","other":"OTH","overlap":"OVL"}
@@ -32,14 +37,15 @@ COL ={"attention":"#e6194B","gemm":"#3cb44b","elem":"#f58231","embedding":"#911e
       "idle":"#9A9A9A","nccl":"#4363d8","other":"#bcbd22","overlap":"#42d4f4"}
 def lighten(h,f=0.5):
     r,g,b=int(h[1:3],16),int(h[3:5],16),int(h[5:7],16); return "#%02x%02x%02x"%(int(r+(255-r)*f),int(g+(255-g)*f),int(b+(255-b)*f))
-GSH={"UVQK":0.28,"PROJ":0.5,"G-O":0.72}; NSH={"N-E":0.30,"N-O":0.60}
-SUBSH={"gemm":GSH,"nccl":NSH}
+GSH={"UVQK":0.28,"PROJ":0.5,"G-O":0.72}; NSH={"N-Ed":0.20,"N-Es":0.45,"N-Od":0.60,"N-Os":0.78}
+ISH={"I-launch":0.20,"I-host":0.42,"I-sync":0.58,"I-copy":0.72,"I-oth":0.85}
+SUBSH={"gemm":GSH,"nccl":NSH,"idle":ISH}
 
 def sunburst(ax,d,title):
     inner_v=[d.get(c,0) for c in ORDER]; inner_c=[COL[c] for c in ORDER]
     ov,oc,olbl=[],[],[]
     for c in ORDER:
-        v=d.get(c,0); sub=d.get(c+"_sub") if c in ("gemm","nccl") else None
+        v=d.get(c,0); sub=d.get(c+"_sub") if c in ("gemm","nccl","idle") else None
         if sub:
             SH=SUBSH[c]
             for s,sv in sub.items(): ov.append(sv);oc.append(lighten(COL[c],SH.get(s,.5)));olbl.append(s)
@@ -66,8 +72,11 @@ fig.suptitle("§8 scale-study GPU-time sunburst — GB300 16-GPU, exposed accoun
 KEY=[("HSTU",COL["attention"],"hstu fwd/bwd"),("UVQK",lighten(COL["gemm"],GSH["UVQK"]),"gemm / uvqk"),
      ("PROJ",lighten(COL["gemm"],GSH["PROJ"]),"gemm / projection"),("G-O",lighten(COL["gemm"],GSH["G-O"]),"gemm / others"),
      ("ELEM",COL["elem"],"elementwise"),("EMB",COL["embedding"],"embedding op"),
-     ("N-E",lighten(COL["nccl"],NSH["N-E"]),"nccl exposed"),("N-O",lighten(COL["nccl"],NSH["N-O"]),"nccl overlap"),
-     ("IDLE",COL["idle"],"GPU idle"),("OTH",COL["other"],"others"),("OVL",COL["overlap"],"overlapped")]
+     ("N-Ed",lighten(COL["nccl"],NSH["N-Ed"]),"nccl DENSE/all-reduce (exposed)"),("N-Es",lighten(COL["nccl"],NSH["N-Es"]),"nccl SPARSE/all-to-all (exposed)"),
+     ("N-Os",lighten(COL["nccl"],NSH["N-Os"]),"nccl sparse (overlap)"),
+     ("I-launch",lighten(COL["idle"],ISH["I-launch"]),"idle: kernel-launch (CPU dispatch)"),("I-host",lighten(COL["idle"],ISH["I-host"]),"idle: host/python gap"),
+     ("I-sync",lighten(COL["idle"],ISH["I-sync"]),"idle: sync wait"),("I-copy",lighten(COL["idle"],ISH["I-copy"]),"idle: H↔D copy"),
+     ("OTH",COL["other"],"others"),("OVL",COL["overlap"],"overlapped")]
 handles=[plt.Rectangle((0,0),1,1,color=c) for _,c,_ in KEY]
 fig.legend(handles,[f"{ab} = {full}" for ab,_,full in KEY],ncol=6,fontsize=8,loc="lower center",frameon=False,bbox_to_anchor=(0.5,-0.02),columnspacing=1.4,handlelength=1.1)
 fig.tight_layout(rect=[0,0.08,1,0.94])
