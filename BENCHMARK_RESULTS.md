@@ -637,6 +637,11 @@ kv128** — swept over **two sequence-length distributions** (zipf, lognormal), 
 (2048/50M/exp5) to isolate exp4→exp5. Compared against the existing **GB300 jagged max_seq-2048 exp4** baseline (§5.1(B)/§5.2(B)).
 Captured with the scale-study harness (`runtime/scaleup/`).
 
+> 📈 **Full capacity × throughput scaling study** — the sparse-embedding **feasibility frontier** (rows × ratio × GPUs ×
+> batch: a table fits iff rows/GPU ≤ ~125M; ratio doesn't rescue OOM; batch is the throughput lever) is written up
+> separately in **[`SCALING_STUDY_lognormal.md`](SCALING_STUDY_lognormal.md)** (realistic lognormal sequence
+> lengths).
+
 **Sequence-length distributions** (faithful to `RandomDistribution`, `commons/datasets/hstu_batch.py`):
 ![seqlen dist — zipf vs lognormal](figures/seqlen_dist_zipf_vs_lognormal.png)
 
