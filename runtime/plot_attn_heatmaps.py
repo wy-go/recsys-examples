@@ -25,7 +25,8 @@ def parse(path):
         if tok != bs * sl:          # skip non-data rows (tokens must equal bs*sl)
             continue
         bss.add(bs); sls.add(sl)
-        mk = "OVF" if "OVERFLOW" in rest else ("OOM" if "OOM" in rest else None)
+        mk = ("OVF" if "OVERFLOW" in rest else "OOM" if "OOM" in rest
+              else "hang" if "HANG" in rest else None)   # hang = triton JIT/ptxas wall (not measured)
         if mk:
             cells[(bs, sl)] = (np.nan, np.nan, np.nan, mk); continue
         n = [float(x) for x in re.findall(r"[-+]?\d*\.\d+|\d+", rest.replace("%", ""))][:9]
@@ -91,6 +92,14 @@ def figure(src, out, suptitle, peak):
 
 GB, HP = 2500.0, 989.0   # bf16 dense peaks (GB300 per NVL72 Quick Start Guide; H100)
 JOBS = [
+    # v26.06 (this-doc) — same peak 2500; on v26.06 the int32 overflow is fixed so NO OVF cells
+    ("v2606_cut128.txt",     "v2606/attn_cutlass_kv128.png", "GB300 v26.06 — Blackwell CUTLASS, kv128 (no OVF)", GB),
+    # §8b pair — the kv256 image (FBGEMM dev @ PR #18). d256 = the NEW CuTe kernel; d128 = same-image reference.
+    ("kv256img_cute256.txt", "v2606/attn_cute_kv256_8b.png", "GB300 kv256 image — Blackwell CUTLASS, kv256 (head_dim 256, num_heads 4; d256 bwd from PR #18)", GB),
+    ("kv256img_cut128.txt",  "v2606/attn_cutlass_kv128_8b.png", "GB300 kv256 image — Blackwell CUTLASS, kv128 (head_dim 128, num_heads 4)", GB),
+    ("v2606_tri256.txt",     "v2606/attn_triton_kv256.png",  "GB300 v26.06 — Triton, kv256 (head_dim 256)", GB),
+    ("v2606_tri128.txt",     "v2606/attn_triton_kv128.png",  "GB300 v26.06 — Triton, kv128 (head_dim 128)", GB),
+    ("v2606_tri256_ext.txt", "v2606/attn_triton_kv256_ext.png", "GB300 v26.06 — Triton kv256, 10x10 (BS<=512 / SeqLen<=65536; grey = OOM at >=16.7M tok / hang = triton JIT wall at SL65536)", GB),
     ("gb300_cut128.txt",     "gb300/attn_cutlass_kv128.png", "GB300 — Blackwell CUTLASS, kv128 (head_dim 128)", GB),
     ("gb300_tri128.txt",     "gb300/attn_triton_kv128.png",  "GB300 — Triton, kv128 (head_dim 128)", GB),
     ("gb300_tri256.txt",     "gb300/attn_triton_kv256.png",  "GB300 — Triton, kv256 (head_dim 256)", GB),

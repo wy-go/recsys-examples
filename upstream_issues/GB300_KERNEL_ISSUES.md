@@ -30,9 +30,36 @@ Blackwell kernel path, not a model-config error. (Note: the Hopper **backward** 
 `Headdim <= 128` in `corelib/hstu/hopper/hstu_bwd_launch_template.h:193`, so a head-dim-256 backward limit is plausible
 kernel-side.)
 
+> **UPDATE 2026-07-23 — the KERNEL gap is fixed upstream-fork-side; the remaining blocker is recsys-examples
+> itself.** `jiayus-nvidia/FBGEMM` `dev` landed **PR #18 "Hstu blackwell dim256"**
+> (`ab8bfc6f57b630081459c76de1da25668be0bb6c`, 2026-07-22): a pure-Python CuTe-DSL **backward** for head_dim 256
+> on SM100 (`src/hstu_blackwell/hstu_bwd_256_cute*.py`). The original assert is gone at that commit. What still
+> blocks 256 in recsys-examples (verified live on `main`, which pins pre-#18 `647f0f57`):
+> 1. **the framework guard** — `examples/hstu/ops/fused_hstu_op.py` raises
+>    `"Blackwell fwd only supports head_dim in (64, 128)"` and the backward dispatch falls through to the slow
+>    path for 256 (fwd `:372`, bwd `:763` in the v26.05/06 lineage);
+> 2. **the submodule pin** — no recsys-examples ref consumes #18 (newest tag v26.06);
+> 3. **packaging** — the v26.06 wrapper's module-level `import hstu.hstu_ops_gpu` no longer resolves against
+>    FBGEMM dev, which installs that module at `hstu.hstu_blackwell.hstu_ops_gpu`.
+> **Our workaround** (measured in [`BENCHMARK_RESULTS.md` §8b](../BENCHMARK_RESULTS.md)): image
+> `Dockerfile.gb300.recsys.v2606kv256.py312` advances the FBGEMM submodule to #18; `KVDIM=256` in
+> `runtime/scaleup/scaleup_entry.sh` relaxes the guard and makes the import tolerant at launch. Result: d256
+> attention e2e **1020 TF/40.8%** (3.0× the Triton fallback's 337 TF/13.5%), fused layer **602 TF/24.1%** (+54%
+> over Triton's 391). The d256 *backward* is still slower than d128's (878 vs 1298 TF), so Issue 1's practical
+> gap is narrowed, not closed.
+
 ---
 
 ## Issue 2 — INT32 indexing overflow in the Blackwell CUTLASS backward (implementation limit, not precision)
+
+> **UPDATE 2026-07-23 — FIXED as of v26.06.** The FBGEMM pinned by recsys-examples **v26.06** carries the Blackwell
+> backward int32-overflow fix: the same CUTLASS-kv128 sweep now runs **0 OVF over the full extended grid** (through
+> SL65536, deep past the old `BS×SL ≥ 2²⁰` wall), and the peak moves into the previously-overflowing corner
+> (fwd+bwd 1454 TF / 58% @ BS1·SL65536). The grid's remaining grey corner (**≥ 2²³ ≈ 8.4M tokens**) is a genuine
+> **HBM OOM staircase** (CUDA illegal-access on the backward workspace), *not* an int32 overflow. FBGEMM has since
+> also landed `9e50261` ("Fix Blackwell HSTU **dQ workspace offset overflow**", 2026-07-10; included in the PR-#18
+> image of Issue 1) which plausibly addresses that workspace illegal-access — not yet re-measured. The text below is
+> preserved as the v26.05 record.
 
 **Where:** CUTLASS backward → Blackwell CuTe-DSL kernel constructing an int32 memref descriptor.
 

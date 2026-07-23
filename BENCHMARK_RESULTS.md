@@ -90,7 +90,7 @@ peak TFLOPS is the measured global rate, MFU = TFLOPS/peak (GB300 2500, H100 989
 | triton | 256 | 926 / 37.0% | 9.4% | 296 / 11.8% | BS128 / SL16384 |
 | triton | 256 (9×9 extended) | 945 / 37.8% | 10.6% | 335 / 13.4% | SL32768 (BS128·BS256) |
 
-Blackwell CUTLASS at kv128 hits **3 INT32-overflow cells** at the top-right (BS×SL ≥ 2²¹, the int32 memref-descriptor
+Blackwell CUTLASS at kv128 hits **3 INT32-overflow cells** at the top-right (BS×SL ≥ 2²⁰, the int32 memref-descriptor
 limit — greyed `OVF` in the heatmap); triton has no such limit and fills the whole grid.
 
 **H100 cu128** (MFU on 989):
@@ -727,7 +727,114 @@ step, is the right summary:
 |:--|
 | *Two effects, isolated (breakdown = 80-step aggregate). **(1) Prefetch is overhead at the §5 scale:** 50M/2048 **exp5** idles **63%** and drops MFU to **3.68%** vs §5.2(B) **exp4**'s ~4.73% — the working set fits HBM, so there's nothing to host-stream and prefetch just adds bookkeeping (caching/prefetch only pay off when the table is host-backed). **(2) Sequence length + distribution set utilization:** 2048→4096 and 50M→1B (zipf) cuts idle 63→45% and lifts MFU to 8.39%; switching zipf→**lognormal** (longer, uniform sequences) cuts idle to **24%** and lifts MFU to **12.88%** — the step becomes **elementwise/compute-bound rather than idle-bound** (elementwise **33%** ≈ attn+gemm **31%**, idle just 24% — the same memory-bound-elementwise ceiling as §5's GB300, not a purely compute-bound step). Zipf's short-dominated sequences under-fill the GPU and expose the fixed all-reduce, so the **default zipf understates GB300 utilization** vs a realistic workload.* |
 
-Scripts/artifacts: `runtime/scaleup/`.
+### 8a. v26.05 → v26.06 image A/B
+*Same 1B/4096/lognormal config; 8-GPU capture (the scale-study 1B feasibility point).* The
+whole §8 breakdown above is on **v26.05**. Re-capturing the **1B/4096/logn** config on **v26.06** (the v26.06 FBGEMM
+kernel stack — **PR #13** Blackwell HSTU **CPU-launch** fix/TVM-FFI + **PR #10** host-side layout-copy removal), *same
+config, only the image changes*, makes the step **18.9% faster** (median 94.0 → 77.5 ms; **MFU ~16 → ~19%**); and
+**separately, PR #12** *(backward workspace-descriptor overflow)* **fixes the bs256 int32 overflow**
+([Issue #2](upstream_issues/GB300_KERNEL_ISSUES.md) — the exact bs256/S4096 case that threw `OverflowError: 2³¹` on
+v26.05 now runs, at ~14% MFU). **The `% of step` column is a trap for this comparison — read the absolute ms:**
+
+| exposed leaf | v26.05 % | v26.06 % | v26.05 ms | v26.06 ms | Δ ms |
+|---|---:|---:|---:|---:|---:|
+| `hstu fwd/bwd` (attention) | 17.3% | 21.4% | 1320 | 1322 | +2 |
+| `gemm / uvqk` | 5.9% | 5.4% | 453 | 335 | −118 |
+| `gemm / projection` | 1.9% | 1.8% | 148 | 113 | −35 |
+| `gemm / others` | 2.1% | 5.2% | 159 | 320 | +161 |
+| `elementwise` | 28.9% | 24.7% | 2205 | 1528 | **−677** |
+| `embedding op` | 2.3% | 2.9% | 177 | 180 | +2 |
+| `GPU idle` | 23.1% | 28.4% | 1766 | 1762 | **−5 (flat)** |
+| `nccl(exposed)` | 16.2% | 7.8% | 1241 | 482 | **−759** |
+| `nccl(overlap)` | 1.0% | 0.8% | 74 | 51 | −23 |
+| `others` | 1.0% | 1.3% | 79 | 83 | +4 |
+| `overlapped` | 0.1% | 0.2% | 10 | 14 | +4 |
+| **Total step (×80)** | 100.0% | 100.0% | **7637** | **6193** | **−1445 (−18.9%)** |
+| Nsight trace | [`scaleup_1b4096_logn_v2605.nsys-rep`](profiles/scaleup_1b4096_logn_v2605.nsys-rep) | [`scaleup_1b4096_logn_v2606.nsys-rep`](profiles/scaleup_1b4096_logn_v2606.nsys-rep) | | | |
+
+![§8a v26.05→v26.06 A/B GPU-time sunburst — same rings/sub-splits as §8; the two disks are AREA-scaled to step time (v26.06 = 0.81× area), so equal-area wedges = equal absolute ms. Idle area is flat (launch+host unchanged); exposed NCCL (N-Ed dense all-reduce + N-Es sparse a2a) ~halves; elementwise shrinks](figures/perf_sunburst_v2606_ab.png)
+
+The disks are **area-scaled to step time** (v26.06 = 0.81× the area), so a wedge's *area* is its *absolute* ms: the grey
+**IDLE** ring is the **same size** in both disks (launch+host unchanged) even though its angle/% grows, while the blue
+**NCCL** ring — `N-Ed` (dense all-reduce) + `N-Es` (sparse embedding a2a) — visibly **halves**. GPU idle's *percentage*
+**rises** (23→28%) while its **absolute time is flat** (1766 → 1762 ms) — the step got shorter,
+not the idle. So PR #13's CPU-launch fix **does not reduce host/launch idle at 1B scale** (those gaps are already small in
+absolute terms; the % only moves because the denominator shrank — the same `% of step` trap the Caveats flag for the
+fastest step, here across image versions). The −1445 ms/80-step speedup is instead **~54% collapsed exposed NCCL** (−759 ms:
+dense all-reduce and sparse embedding-a2a both ≈halve, as tighter kernel dispatch feeds the collectives so they are far
+less often the sole-active kernel) + **~45% faster elementwise** (−677 ms; attention and GEMM are **flat** in absolute
+time — consistent with elementwise-kernel fusion in the v26.06 stack, not a faster matmul). Same analysis
+(`exposed_perstep.py`) on the matched-config trace pair; the value is the **image delta**, robust to GPU count. A full
+v26.06 re-run of §1–§5 (with the contextual fix) is tracked separately.
+
+The per-step, real-time view (absolute ms, run order — same as §8's) confirms the aggregate is not an artifact of any one
+step: on a **shared y-axis** every v26.06 bar is shorter (**−17.6% median step, −18.9% total**), the shrink lives in the **NCCL(exposed) + compute
+bands**, and the grey **IDLE band is ~unchanged step-for-step** (matching the flat-idle finding):
+
+![§8a v26.05→v26.06 per-step GPU-time in absolute ms, run order, matched 1B/4096/logn 8-GPU, shared y-axis — every v26.06 bar shorter; NCCL(exposed) + compute bands shrink; grey idle band ~unchanged](figures/perf_scaleup_realtime_v2606_ab.png)
+
+Scripts/artifacts: `runtime/scaleup/`; A/B figures `runtime/plot_sunburst_v2606_ab.py`, `runtime/plot_scaleup_realtime_v2606_ab.py`; per-step data `runtime/nsys_repro/scaleup_perstep/{v2605,v2606}.json`.
+
+
+### 8b. head_dim 256 on Blackwell — FBGEMM dev PR #18 vs the Triton fallback
+
+**Why 256 needed an unlock:** the kernel-side gap is fixed (FBGEMM dev **PR #18** `ab8bfc6`, 2026-07-22), but
+**recsys-examples itself still blocks head_dim 256 on Blackwell** — framework guard, submodule pin, packaging
+import — see [**Issue 1** (updated 2026-07-23)](upstream_issues/GB300_KERNEL_ISSUES.md). Our unlock: the
+`v2606kv256` image pair (`docker/Dockerfile.gb300.recsys.v2606kv256.py312` + x86 slice) + the `KVDIM=256`
+launch patch. Entries/launchers: `runtime/launch/entries/kv256_micro_entry.sh`,
+`runtime/scaleup/experiments/kv256_e2e_ab.sh`.
+
+**Setup**:
+- **micro** — num_heads 4 for both head dims (§2/§3 convention). Attn columns = **9×9 grid peaks**; layer column =
+  the **§3 fixed point** (bs32 × SL4096, full sequences, 1 layer, bf16).
+- **"CUTLASS"** = the `--kernel_backend cutlass` backend (CuTe-DSL on Blackwell for both head dims; PR #18 adds the
+  d256 backward inside it). Triton d256 micro rows are the historical §2/§3 measurements.
+- **e2e** — the **upstream-default model shape** (kv256 · heads 4 · H=1024 · L=8) on our scale-study workload:
+  non-contextual, 1B-row item + 100-row action tables, lognormal seqlens, `max_seqlen` 4096, **8 GPU** (the
+  §8a/scaling-study operating point, where every §8b comparator lives; §4b/§5/§8's 16-GPU e2e is a different
+  operating point).
+- **stats** — each e2e cell = mean of **n=3**; deltas count as real only above **2σ** (σ = 0.84 pp MFU, pooled over
+  30 scaling-study repeats), so single-run deltas < ~1.7 pp are noise.
+
+
+**The full grids** (9×9, BS≤256 × SL≤32768, §2 format: TFLOPS with MFU% per cell; red = panel peak, blue =
+runner-up).
+
+![CUTLASS d256 (PR #18) 9x9 attention heatmap — fwd, bwd, fwd+bwd panels; peaks at small batch x SL32768, fwd 1771 TF](figures/v2606/attn_cute_kv256_8b.png)
+
+![d128 CUTLASS 9x9 attention heatmap on the same image — fwd, bwd, fwd+bwd panels; bwd and e2e panels clearly above d256's](figures/v2606/attn_cutlass_kv128_8b.png)
+
+| | attn fwd peak | attn bwd peak | attn e2e peak | fused layer e2e | **e2e train bs32** | **bs256** |
+|---|---:|---:|---:|---:|---:|---:|
+| Triton d256 · heads=4 (pre-#18) | 955 / 38% | ~268 / ~11% | 337 / 13.5% | 391 / 15.6% | 9.67% | 13.84% |
+| **CUTLASS d256 · heads=4 (PR #18)** | **1771 / 70.9%** | **878 / 35.1%** | **1020 / 40.8%** | **602 / 24.1%** | **19.17%** | **22.78%** |
+| d128 · heads=4 | 1631 / 65.2% | 1298 / 51.9% | 1337 / 53.5% | 675 / 27.0% | — | — |
+| d128 · heads=8 (same shape as d256·4: N·D=1024) | — | — | — | 848 / 33.9% | 25.69% | OOM* |
+
+*\*both N·D=1024 arms sit ~272 GB at bs256; the d128 arm tips over (the d256 arm ran). Its bs128 = 30.27%.*
+
+![§8b: left — fused-layer forward/backward/e2e TFLOPS in the §3 format at one fixed config (bs32 x S4096) for Triton d256, CUTLASS d256 and d128: the PR 18 forward beats d128 (979 vs 751 TF), the backward is the remaining gap (510 vs 647). Right — e2e training MFU vs batch at the upstream-default shape: the CUTLASS-d256 line sits ~2x above Triton at every batch, with the d128-heads-8 same-shape arm dashed above both](figures/v2606/v2606_kv256_8b.png)
+
+**Where the e2e step goes** — nsys timeline captures of the two same-shape arms (heads 4×256 vs 8×128, both N·D=1024 — identical parameters and FLOPs, different head partitioning) (§8/§8a accounting: exposed
+GPU-time, 80-step aggregate, disks area-scaled to step time; per-step trace in absolute ms on a shared y-axis):
+
+![§8b sunburst pair — CUTLASS d256 heads 4 vs d128 heads 8, disks area-scaled: the d256 disk is bigger almost entirely because its red HSTU wedge is 42 percent of a 136 ms step vs 26 percent of a 114 ms step](figures/v2606/kv256_sunburst.png)
+
+![§8b per-step stacked GPU-time in absolute ms, run order, shared y-axis — the d256 panel's red HSTU band is roughly twice as tall; idle, gemm, elementwise and embedding bands are near-identical across panels, and the d128 panel shows more exposed NCCL](figures/v2606/kv256_perstep.png)
+
+**Reading:** the step gap (136.1 vs 114.5 ms median) is **almost entirely the attention band** —
+HSTU is 57 ms/step at d256 vs 30 ms at d128·8, while GEMM (uvqk/proj), elementwise, embedding and idle are
+near-identical in absolute ms (same shape ⇒ same non-attention work). The residual difference is **exposed
+NCCL** (9.4% vs 3.8% — the *faster* arm exposes more of the same communication, it does not do more of it).
+So at the e2e level, "d256 costs ~19%" ≡ "the d256 attention backward is still ~2× the d128 one" — the same
+conclusion as the layer benchmark, now visible in the timeline.
+
+| 💡 Takeaway |
+|:--|
+| **PR #18 ≈doubles head_dim-256 e2e training** (step ×1.98 @bs32, ×1.65 @bs256; ~11σ). **Why:** the new PR #18 backward fixes Triton's collapse point (~3.3× faster bwd; the d256 *forward* now even beats d128; attn e2e 3.0× Triton's). **What remains:** the d256 backward is still slower than d128's (510 vs 647 TF), and since the layer number is fwd+bwd combined, that alone drags the d256 layer to 0.89× of d128 (602 vs 675; was 0.58× pre-#18) despite the faster forward — **256-wide heads went from a ~2× tax to a ~10–25% one.** **If the model doesn't require 256, d128 is still faster** (d128·heads=8, the same shape: layer 848 vs 602 TF; e2e +6.5 pp at bs32). |
+
+*Validation: the d128·heads=4 layer on this image reproduces the historical 679 TF / 27.2% to 0.6%.*
 
 ---
 
@@ -753,8 +860,10 @@ Scripts/artifacts: `runtime/scaleup/`.
   the §4b kv256/Triton ladder is contextual — so contextual and the fast CUTLASS kernel are mutually exclusive on GB300;
   the separate real-data Triton-*tensor* limit is [Issue #3](upstream_issues/GB300_KERNEL_ISSUES.md)); bwd weaker than fwd;
   and an **int32-overflow in the backward** at the largest cells ([Issue #2](upstream_issues/GB300_KERNEL_ISSUES.md);
-  empirically BS128×SL16384 overflows; ≤BS128×SL8192 runs; bound BS×SL ≥ 2,097,152 at heads4/hd128) — H100 Hopper CUTLASS
-  has no such overflow.
+  empirically BS128×SL8192 and BS64×SL16384 overflow; ≤BS128×SL4096 runs; bound BS×SL ≥ 1,048,576 at heads4/hd128) — H100 Hopper CUTLASS
+  has no such overflow. **All measured on v26.05; the backward int32-overflow is fixed on v26.06** (FBGEMM **PR #12**,
+  *"Fix HSTU Blackwell backward workspace-descriptor overflow"* — the bs256/SL4096 case that threw on v26.05 now runs;
+  see §8a).
 - Per-run keys (backend, kv, contextual, dataset, layer, image digest, seed) are in the trial logs (`log-py312-*` branches).
 
 
