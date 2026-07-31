@@ -289,14 +289,9 @@ flaky multi-node hangs or misattributed torchrec/RNG errors rather than as an em
 
 ### How to reproduce 5A / 5B
 
-All of this is on **GB300 (sm_103), 284,208 MiB (277.5 GiB) HBM per GPU**, 4 GPUs per node, CUDA 13,
-torch 2.9.1, bf16. The residency figures below only mean anything against that 277.5 GiB.
+GB300 (sm_103), 284,208 MiB (277.5 GiB) HBM per GPU, 4 GPUs per node, CUDA 13, torch 2.9.1, bf16.
 
-**The two variants need different configurations** — one command cannot show both. 5B fails early in table
-setup at ~89 GB resident, well before the device is full; 5A needs the device driven to ~92% full. Both use
-the repo's own training entry, with the matching workaround off.
-
-**5B — concurrent host registration.** 8 GPUs (2 nodes × 4):
+**5B** — 8 GPUs (2 nodes x 4):
 
 ```bash
 python3 training/benchmark/scripts/generate_gin_config.py \
@@ -318,16 +313,11 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
     training/pretrain_gr_ranking.py --gin-config-file repro5b.gin
 ```
 
-Expect `cudaHostRegister … unspecified launch failure` at ~89 GB resident, during table setup, on about 2 of
-3 attempts. Serialising the registrations across each node's 4 ranks makes the same config complete.
+`cudaHostRegister ... unspecified launch failure` at ~89 GB resident during table setup, on about 2 of 3
+attempts. `CUDA_LAUNCH_BLOCKING=1`, `num_layers=112` and more workers all raise the odds by aligning the
+ranks; without them setup passes. Serialising the registrations across each node's 4 ranks makes it complete.
 
-**Why `num_layers` matters here, and why it is not the cause.** The race fires when a node's 4 ranks reach
-the registration call *at the same moment*, so anything that shifts process timing changes the odds. Depth is
-one such thing — L=112 faulted, L=96 never did — but nothing about a layer touches `cudaHostRegister`.
-`CUDA_LAUNCH_BLOCKING=1` works the same way: it makes launches synchronous, which lines the ranks up. Read
-both as odds knobs, not mechanisms. Dropping `CUDA_LAUNCH_BLOCKING` lets setup pass.
-
-**5A — device init kernel under near-full HBM.** 64 GPUs (16 nodes × 4), 32.4B dense:
+**5A** — 64 GPUs (16 nodes x 4), 32.4B dense:
 
 ```bash
 python3 training/benchmark/scripts/generate_gin_config.py \
@@ -345,19 +335,16 @@ item_and_action_feature/FeatureArgs.max_sequence_length = 2048
 item_seqlen_dist/RandomDistribution.dist_type = 'lognormal'
 EOF
 
-# leave PYTORCH_CUDA_ALLOC_CONF unset — setting expandable_segments is the workaround
+# leave PYTORCH_CUDA_ALLOC_CONF unset
 torchrun --nnodes=16 --nproc_per_node=4 training/pretrain_gr_ranking.py --gin-config-file repro5a.gin
 ```
 
-Expect `unspecified launch failure` from `initializer.cu:50`, reported async into whatever CUDA call runs
-next. This config sits at ~255,000 MiB of 284,208 (≈92%) and failed 4/4, each time on a different worker;
-the same sparse config under 16.3B dense (~187,000 MiB, ≈66%) never failed. Setting
+`unspecified launch failure` from `initializer.cu:50`, reported async into the next CUDA call. This config
+sits at ~255,000 MiB of 284,208 (~92%) and failed 4/4, each time on a different worker; the same sparse
+config at 16.3B dense (~187,000 MiB, ~66%) never failed.
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` makes it complete.
 
-The two are independent: `expandable_segments` does not affect 5B, which failed with and without it.
-
-5B at 64 GPU tests 16 workers at once, so it fails far more often; at 2 workers a single clean run is
-weak evidence.
+`expandable_segments` does not affect 5B.
 
 
 **Status: CLOSED-BY-WORKAROUND.** With 5A+5B applied together (`expandable_segments` + `LOCKREG`), the 32.4B
