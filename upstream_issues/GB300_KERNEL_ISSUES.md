@@ -1,7 +1,8 @@
 # recsys-examples HSTU on Blackwell (GB300 / sm_103) — reproducible issues
 
 Problems hit while benchmarking the HSTU attention kernels in `recsys-examples` (v26.05) on **GB300
-(NVIDIA Blackwell, compute capability 10.3 / “sm_103”, CUDA 13, torch 2.9.1, bf16)**. Reproducible with the
+(NVIDIA Blackwell, compute capability 10.3 / “sm_103”, 284,208 MiB / 277.5 GiB HBM per GPU,
+4 GPUs per node, CUDA 13, torch 2.9.1, bf16)**. Reproducible with the
 self-contained `repro_gb300_kernel_issues.py` in this directory (drop it into `examples/hstu/` of the upstream repo
 and run it on a Blackwell GPU).
 
@@ -288,18 +289,24 @@ flaky multi-node hangs or misattributed torchrec/RNG errors rather than as an em
 
 ### How to reproduce 5A / 5B
 
-Both fire during DynamicEmb table setup. Run the repo's own training entry with the workarounds off:
+All of this is on **GB300 (sm_103), 284,208 MiB (277.5 GiB) HBM per GPU**, 4 GPUs per node, CUDA 13,
+torch 2.9.1, bf16. The residency figures below only mean anything against that 277.5 GiB.
+
+**The two variants need different configurations** — one command cannot show both. 5B fails early in table
+setup at ~89 GB resident, well before the device is full; 5A needs the device driven to ~92% full. Both use
+the repo's own training entry, with the matching workaround off.
+
+**5B — concurrent host registration.** 8 GPUs (2 nodes × 4):
 
 ```bash
-# 2 nodes x 4 GPUs. The trigger is the table-setup phase; it never reaches steady-state training.
 python3 training/benchmark/scripts/generate_gin_config.py \
     --kernel_backend cutlass --caching --ratio 0.95 --include-contextual \
     --kv_channels 128 --num_attention_heads 64 \
-    --max_sequence_length 2048 --max_train_iters 60 -o repro5.gin
+    --max_sequence_length 2048 --max_train_iters 60 -o repro5b.gin
 
-cat >> repro5.gin <<'EOF'
+cat >> repro5b.gin <<'EOF'
 NetworkArgs.hidden_size = 8192
-NetworkArgs.num_layers  = 112          # <- the 5B trigger; L=96 never faulted
+NetworkArgs.num_layers  = 112
 TrainerArgs.train_batch_size = 1
 item_embedding/DynamicEmbeddingArgs.item_vocab_size_or_capacity = 250000000
 item_embedding/DynamicEmbeddingArgs.item_vocab_gpu_capacity_ratio = 0.95
@@ -307,19 +314,50 @@ item_and_action_feature/FeatureArgs.max_sequence_length = 2048
 item_seqlen_dist/RandomDistribution.dist_type = 'lognormal'
 EOF
 
-torchrun --nnodes=2 --nproc_per_node=4 training/pretrain_gr_ranking.py --gin-config-file repro5.gin
+CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
+    training/pretrain_gr_ranking.py --gin-config-file repro5b.gin
 ```
 
-| | set | expected |
-|---|---|---|
-| **5B** | `CUDA_LAUNCH_BLOCKING=1`, no registration lock | `cudaHostRegister … unspecified launch failure` at ~89 GB resident during table setup. ~2/3 of attempts at 2 workers; without `CUDA_LAUNCH_BLOCKING` setup passes. `num_layers=112` triggers it, 96 does not. |
-| **5A** | ~92% device residency before init, no `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | `unspecified launch failure` from `initializer.cu:50`, reported async into the next CUDA call. Near-deterministic at 32.4B dense (~255,000 MiB); not seen at 16.3B (~187,000 MiB). |
+Expect `cudaHostRegister … unspecified launch failure` at ~89 GB resident, during table setup, on about 2 of
+3 attempts. Serialising the registrations across each node's 4 ranks makes the same config complete.
 
-Applying the matching workaround makes the same config complete. The two are independent —
-`expandable_segments` does not affect 5B.
+**Why `num_layers` matters here, and why it is not the cause.** The race fires when a node's 4 ranks reach
+the registration call *at the same moment*, so anything that shifts process timing changes the odds. Depth is
+one such thing — L=112 faulted, L=96 never did — but nothing about a layer touches `cudaHostRegister`.
+`CUDA_LAUNCH_BLOCKING=1` works the same way: it makes launches synchronous, which lines the ranks up. Read
+both as odds knobs, not mechanisms. Dropping `CUDA_LAUNCH_BLOCKING` lets setup pass.
 
-At 64 GPU each attempt tests 16 workers at once, so it fails far more often; at 2 workers a single
-clean run is weak evidence.
+**5A — device init kernel under near-full HBM.** 64 GPUs (16 nodes × 4), 32.4B dense:
+
+```bash
+python3 training/benchmark/scripts/generate_gin_config.py \
+    --kernel_backend cutlass --caching --ratio 0.025 --include-contextual \
+    --kv_channels 128 --num_attention_heads 64 \
+    --max_sequence_length 2048 --max_train_iters 60 -o repro5a.gin
+
+cat >> repro5a.gin <<'EOF'
+NetworkArgs.hidden_size = 8192
+NetworkArgs.num_layers  = 96
+TrainerArgs.train_batch_size = 3
+item_embedding/DynamicEmbeddingArgs.item_vocab_size_or_capacity = 2000000000
+item_embedding/DynamicEmbeddingArgs.item_vocab_gpu_capacity_ratio = 0.025
+item_and_action_feature/FeatureArgs.max_sequence_length = 2048
+item_seqlen_dist/RandomDistribution.dist_type = 'lognormal'
+EOF
+
+# leave PYTORCH_CUDA_ALLOC_CONF unset — setting expandable_segments is the workaround
+torchrun --nnodes=16 --nproc_per_node=4 training/pretrain_gr_ranking.py --gin-config-file repro5a.gin
+```
+
+Expect `unspecified launch failure` from `initializer.cu:50`, reported async into whatever CUDA call runs
+next. This config sits at ~255,000 MiB of 284,208 (≈92%) and failed 4/4, each time on a different worker;
+the same sparse config under 16.3B dense (~187,000 MiB, ≈66%) never failed. Setting
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` makes it complete.
+
+The two are independent: `expandable_segments` does not affect 5B, which failed with and without it.
+
+5B at 64 GPU tests 16 workers at once, so it fails far more often; at 2 workers a single clean run is
+weak evidence.
 
 
 **Status: CLOSED-BY-WORKAROUND.** With 5A+5B applied together (`expandable_segments` + `LOCKREG`), the 32.4B
