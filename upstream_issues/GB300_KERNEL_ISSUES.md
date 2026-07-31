@@ -236,7 +236,7 @@ runs are not.
 ## Issue 5 — DynamicEmb init dies with CUDA `unspecified launch failure` (GB300): TWO distinct variants, both worked around
 
 One error message, two different bugs — separated by a week of forensics and an 8-GPU probe campaign
-(~20 runs; `runtime/scaleup/experiments/issue5_probe.sh` has the full chain of evidence).
+(~20 runs).
 
 | variant | real trigger | memory-pressure-related? | workaround |
 |---|---|---|---|
@@ -285,6 +285,42 @@ across the node's ranks; a ~10-line launch-time monkeypatch. **Validated 3/3 cle
 **Why it matters:** any large-dense + large-DynamicEmb combination on 288 GB-class devices initialises in
 these regimes; both variants are per-worker, async-presenting and context-corrupting, so they masquerade as
 flaky multi-node hangs or misattributed torchrec/RNG errors rather than as an embedding bug.
+
+### How to reproduce 5A / 5B
+
+Both fire during DynamicEmb table setup. Run the repo's own training entry with the workarounds off:
+
+```bash
+# 2 nodes x 4 GPUs. The trigger is the table-setup phase; it never reaches steady-state training.
+python3 training/benchmark/scripts/generate_gin_config.py \
+    --kernel_backend cutlass --caching --ratio 0.95 --include-contextual \
+    --kv_channels 128 --num_attention_heads 64 \
+    --max_sequence_length 2048 --max_train_iters 60 -o repro5.gin
+
+cat >> repro5.gin <<'EOF'
+NetworkArgs.hidden_size = 8192
+NetworkArgs.num_layers  = 112          # <- the 5B trigger; L=96 never faulted
+TrainerArgs.train_batch_size = 1
+item_embedding/DynamicEmbeddingArgs.item_vocab_size_or_capacity = 250000000
+item_embedding/DynamicEmbeddingArgs.item_vocab_gpu_capacity_ratio = 0.95
+item_and_action_feature/FeatureArgs.max_sequence_length = 2048
+item_seqlen_dist/RandomDistribution.dist_type = 'lognormal'
+EOF
+
+torchrun --nnodes=2 --nproc_per_node=4 training/pretrain_gr_ranking.py --gin-config-file repro5.gin
+```
+
+| | set | expected |
+|---|---|---|
+| **5B** | `CUDA_LAUNCH_BLOCKING=1`, no registration lock | `cudaHostRegister … unspecified launch failure` at ~89 GB resident during table setup. ~2/3 of attempts at 2 workers; without `CUDA_LAUNCH_BLOCKING` setup passes. `num_layers=112` triggers it, 96 does not. |
+| **5A** | ~92% device residency before init, no `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | `unspecified launch failure` from `initializer.cu:50`, reported async into the next CUDA call. Near-deterministic at 32.4B dense (~255,000 MiB); not seen at 16.3B (~187,000 MiB). |
+
+Applying the matching workaround makes the same config complete. The two are independent —
+`expandable_segments` does not affect 5B.
+
+At 64 GPU each attempt tests 16 workers at once, so it fails far more often; at 2 workers a single
+clean run is weak evidence.
+
 
 **Status: CLOSED-BY-WORKAROUND.** With 5A+5B applied together (`expandable_segments` + `LOCKREG`), the 32.4B
 bs3+checkpointing config trained 300 iterations clean at 64 GPU (`fin-R6X-c5`, 2026-07-27: 34.3% MFU, the
