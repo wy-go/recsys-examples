@@ -266,7 +266,9 @@ never failed. Memory-pressure-dependent and near-deterministic.
 (`extendable_tensor.py:149`, via `create_table_state` → `HostExtendableBuffer`).
 
 **Trigger:** the node's 4 rank processes reaching the registration step **at the same moment** — a driver-level
-race on the Grace-coherent platform. **Not** memory-pressure-related: reproduced with the device only ⅓ full.
+race on GB300, where the Grace CPU and the GPUs share one
+hardware-coherent memory space over NVLink-C2C, so host registration takes a different driver path than on
+a discrete PCIe GPU. **Not** memory-pressure-related: reproduced with the device only ⅓ full.
 Probabilistic per node per run; anything that shifts process timing changes the odds (model depth flips it —
 L=112 faults ~4/5, L=96 rarely; `CUDA_LAUNCH_BLOCKING=1` aligns the processes and makes it near-certain;
 16-worker gangs roll 16× the dice — which is why it killed three consecutive 64-GPU runs (c1–c3) while looking like
@@ -319,9 +321,9 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
     training/pretrain_gr_ranking.py --gin-config-file repro5b.gin
 ```
 
-`cudaHostRegister ... unspecified launch failure` at ~89 GB resident, on about 2 of 3 attempts.
+`cudaHostRegister ... unspecified launch failure` at ~89 GB per GPU in use, on about 2 of 3 attempts.
 `CUDA_LAUNCH_BLOCKING=1`, `num_layers=112` and more workers raise the odds by aligning the ranks.
-Serialising the registrations across each node's 4 ranks makes it complete.
+Register host memory one rank at a time across each node's 4 ranks and the run gets past setup.
 
 **5A** — 64 GPUs (16 nodes x 4), 32.4B dense, fails in early training:
 
@@ -352,13 +354,14 @@ torchrun --nnodes=16 --nproc_per_node=4 training/pretrain_gr_ranking.py --gin-co
 Also needs Megatron `DistributedOptimizer`, `grad_reduce_in_fp32=False` and full-layer activation
 checkpointing in `commons/distributed/sharding.py` — 32.4B does not fit on 64 GPUs otherwise.
 
-`unspecified launch failure` from `initializer.cu:50`, reported async into the next CUDA call. It random-fills
-newly inserted rows every step, so it fires in early training, not setup: 4/4 runs at +41–58 min, each on a
-different worker, at ~255,000 MiB resident (~92%). `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` makes
-it complete; it does not affect 5B.
+`unspecified launch failure` from `initializer.cu:50`, reported by the next CUDA call. It fills newly
+inserted rows with random values every step, so it fires in early training, not setup: all 4 runs failed
+41–58 minutes into training, each on a different GPU, at ~255,000 MiB of 284,208 in use (~90%). Set
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and the run trains to completion; it has no effect on 5B.
 
-Only reproduced at this scale. 8-GPU attempts in the same regime (L96, ratio 0.67, ~265 GiB, 120 steps)
-stayed clean, as did 16.3B dense (~187,000 MiB).
+Only reproduced at this scale. 8-GPU attempts at the same memory pressure
+(`num_layers=96`, cache ratio 0.67, ~265 GiB per GPU in use, 120 training steps) did not fail, nor did a
+16.3B dense model (~187,000 MiB).
 
 
 **Status: CLOSED-BY-WORKAROUND.** With 5A+5B applied together (`expandable_segments` + `LOCKREG`), the 32.4B
