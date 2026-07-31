@@ -293,7 +293,8 @@ flaky multi-node hangs or misattributed torchrec/RNG errors rather than as an em
 
 GB300 (sm_103), 284,208 MiB HBM per GPU, 4 GPUs/node, CUDA 13, torch 2.9.1, bf16. Both need the Issue 6
 cache-budget fix (pass `item_embedding_dim`, not `network_args.hidden_size`, at
-`pretrain_gr_ranking.py:112`) — at `hidden_size=8192` the unfixed budget is 64x the configured ratio.
+`pretrain_gr_ranking.py:112`) — at `hidden_size=8192` the unfixed budget is 64x the configured ratio, and
+the run OOMs during cache allocation before reaching either fault.
 
 **5B** — 8 GPUs, fails during table setup:
 
