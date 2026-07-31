@@ -321,8 +321,7 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
 
 `cudaHostRegister ... unspecified launch failure` at ~89 GB resident, on about 2 of 3 attempts.
 `CUDA_LAUNCH_BLOCKING=1`, `num_layers=112` and more workers raise the odds by aligning the ranks.
-Serialising the registrations across each node's 4 ranks makes it complete. The run is expected to OOM at
-the first optimizer step; the fault comes before that, so no ZeRO or checkpointing is involved.
+Serialising the registrations across each node's 4 ranks makes it complete.
 
 **5A** — **no small-scale reproduction.** `initializer.cu:50` random-fills newly inserted rows every step,
 so it fires in early training, not setup. Only seen at 64 GPUs: 32.4B dense (h8192, L96, 2B rows,
