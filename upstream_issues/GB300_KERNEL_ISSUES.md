@@ -291,22 +291,35 @@ flaky multi-node hangs or misattributed torchrec/RNG errors rather than as an em
 
 GB300 (sm_103), 284,208 MiB (277.5 GiB) HBM per GPU, 4 GPUs per node, CUDA 13, torch 2.9.1, bf16.
 
+Both runs need three things set outside the gin, or they OOM before reaching either fault:
+
+- the **Issue 6** cache-budget fix — pass `item_embedding_dim`, not `network_args.hidden_size`, at
+  `pretrain_gr_ranking.py:112`. At `hidden_size=8192` with a 128-wide table the unfixed budget is **64x**
+  the configured ratio, so `--ratio 0.95` tries to allocate 60x the table.
+- Megatron `DistributedOptimizer` (`use_distributed_optimizer=True` on both the DDP and optimizer config)
+  and `grad_reduce_in_fp32=False`, in `commons/distributed/sharding.py`. 32.4B dense does not fit without them.
+- 5A additionally ran with full-layer activation checkpointing.
+
 **5B** — 8 GPUs (2 nodes x 4):
 
 ```bash
 python3 training/benchmark/scripts/generate_gin_config.py \
-    --kernel_backend cutlass --caching --ratio 0.95 --include-contextual \
+    --kernel_backend cutlass --caching --pipeline_type prefetch --ratio 0.95 --include-contextual \
     --kv_channels 128 --num_attention_heads 64 \
-    --max_sequence_length 2048 --max_train_iters 60 -o repro5b.gin
+    --value_dist zipf --value_dist_alpha 1.05 --dist_type hash_roundrobin --balanced_shuffler \
+    --max_sequence_length 2048 --max_train_iters 60 --log_interval 20 -o repro5b.gin
 
 cat >> repro5b.gin <<'EOF'
 NetworkArgs.hidden_size = 8192
 NetworkArgs.num_layers  = 112
+NetworkArgs.disable_contextual_mask = True
 TrainerArgs.train_batch_size = 1
+TrainerArgs.eval_batch_size  = 1
 item_embedding/DynamicEmbeddingArgs.item_vocab_size_or_capacity = 250000000
-item_embedding/DynamicEmbeddingArgs.item_vocab_gpu_capacity_ratio = 0.95
-item_and_action_feature/FeatureArgs.max_sequence_length = 2048
+user_id_emb/DynamicEmbeddingArgs.item_vocab_size_or_capacity    = 250000000
 item_seqlen_dist/RandomDistribution.dist_type = 'lognormal'
+item_seqlen_dist/RandomDistribution.mean = 2000
+item_seqlen_dist/RandomDistribution.std  = 1000
 EOF
 
 CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
@@ -321,18 +334,22 @@ ranks; without them setup passes. Serialising the registrations across each node
 
 ```bash
 python3 training/benchmark/scripts/generate_gin_config.py \
-    --kernel_backend cutlass --caching --ratio 0.025 --include-contextual \
+    --kernel_backend cutlass --caching --pipeline_type prefetch --ratio 0.025 --include-contextual \
     --kv_channels 128 --num_attention_heads 64 \
-    --max_sequence_length 2048 --max_train_iters 60 -o repro5a.gin
+    --value_dist zipf --value_dist_alpha 1.05 --dist_type hash_roundrobin --balanced_shuffler \
+    --max_sequence_length 2048 --max_train_iters 60 --log_interval 20 -o repro5a.gin
 
 cat >> repro5a.gin <<'EOF'
 NetworkArgs.hidden_size = 8192
 NetworkArgs.num_layers  = 96
+NetworkArgs.disable_contextual_mask = True
 TrainerArgs.train_batch_size = 3
+TrainerArgs.eval_batch_size  = 3
 item_embedding/DynamicEmbeddingArgs.item_vocab_size_or_capacity = 2000000000
-item_embedding/DynamicEmbeddingArgs.item_vocab_gpu_capacity_ratio = 0.025
-item_and_action_feature/FeatureArgs.max_sequence_length = 2048
+user_id_emb/DynamicEmbeddingArgs.item_vocab_size_or_capacity    = 2000000000
 item_seqlen_dist/RandomDistribution.dist_type = 'lognormal'
+item_seqlen_dist/RandomDistribution.mean = 2000
+item_seqlen_dist/RandomDistribution.std  = 1000
 EOF
 
 # leave PYTORCH_CUDA_ALLOC_CONF unset
