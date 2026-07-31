@@ -322,7 +322,8 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
 ```
 
 `cudaHostRegister ... unspecified launch failure` at ~89 GB per GPU in use, on about 2 of 3 attempts.
-`CUDA_LAUNCH_BLOCKING=1`, `num_layers=112` and more workers raise the odds by aligning the ranks.
+`CUDA_LAUNCH_BLOCKING=1`, `num_layers=112` and more workers (e.g. 64 GPUs = 16 nodes) raise the odds by
+aligning the ranks.
 Register host memory one rank at a time across each node's 4 ranks and the run gets past setup.
 
 **5A** — 64 GPUs (16 nodes x 4), 32.4B dense, fails in early training:
