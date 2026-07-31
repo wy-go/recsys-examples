@@ -10,7 +10,12 @@ Line numbers below are against `examples/hstu/modules/hstu_attention.py` as of v
 
 ---
 
-## Issue 1 — Blackwell CUTLASS head_dim (kv_channels) 256: forward runs, **training path fails**
+## ~~Issue 1 — Blackwell CUTLASS head_dim (kv_channels) 256: forward runs, training path fails~~ ✅ FIXED
+
+> **FIXED upstream.** `jiayus-nvidia/FBGEMM` `dev` PR #18 ("Hstu blackwell dim256") adds the d256 Blackwell
+> backward. Verified on our env ③ image: the §3 HSTU-layer sweep runs `fused_cutlass_256` end-to-end
+> (979.4 fwd / 510.0 bwd / 602.4 e2e TFLOPS, 24.1% MFU, 1.69× over the triton fallback it replaced), and the
+> §2b kernel sweep runs all six head/dim setups incl. D=256 on CUTLASS. Text below preserved as the v26.05 record.
 
 **Where:** the CUTLASS backend → `FusedHSTUAttention.forward` (line 253) → `hstu_attn_varlen_func`
 (the `fbgemm_gpu_hstu` Blackwell CuTe-DSL kernel).
@@ -50,7 +55,22 @@ kernel-side.)
 
 ---
 
-## Issue 2 — INT32 indexing overflow in the Blackwell CUTLASS backward (implementation limit, not precision)
+## ~~Issue 2 — INT32 indexing overflow in the Blackwell CUTLASS backward~~ ✅ FIXED
+
+> **FIXED upstream, and now measured (2026-07-31).** The doc previously said `9e50261` ("Fix Blackwell HSTU
+> dQ workspace offset overflow", in the PR-#18 image) *plausibly* addressed this but was **not yet
+> re-measured**. Our §2b `attn6d` sweep re-measures it directly, at the exact reported shape
+> (num_heads=4, head_dim=128): the reported trigger is `batch × seqlen ≥ 2²⁰ = 1,048,576`, and the
+> **backward now runs at up to 8× that** —
+>
+> | batch × seqlen | product | vs trigger | backward |
+> |---|---:|---:|---|
+> | 64 × 16384 | 1,048,576 | 1× | ✅ 1185.4 TFLOPS |
+> | 128 × 16384 | 2,097,152 | 2× | ✅ 1179.1 |
+> | 256 × 16384 | 4,194,304 | 4× | ✅ 1170.0 |
+> | 512 × 16384 | 8,388,608 | 8× | ✅ 1162.8 |
+>
+> No `OverflowError`, and all 80 cells of every setup populated. Text below preserved as the v26.05 record.
 
 > **UPDATE 2026-07-23 — FIXED as of v26.06.** The FBGEMM pinned by recsys-examples **v26.06** carries the Blackwell
 > backward int32-overflow fix: the same CUTLASS-kv128 sweep now runs **0 OVF over the full extended grid** (through
@@ -210,3 +230,111 @@ profile the fast kernel we drop contextual; to keep contextual we'd have to swit
 **Contrast Hopper (H100):** the `sm_major_version == 9` branch does **not** call `_blackwell_num_contexts_or_none`, so
 Hopper CUTLASS runs contextual normally — which is why our H100 runs (and upstream's) are contextual and GB300's CUTLASS
 runs are not.
+
+---
+
+## Issue 5 — DynamicEmb init dies with CUDA `unspecified launch failure` (GB300): TWO distinct variants, both worked around
+
+One error message, two different bugs — separated by a week of forensics and an 8-GPU probe campaign
+(~20 runs; `runtime/scaleup/experiments/issue5_probe.sh` has the full chain of evidence).
+
+| variant | real trigger | memory-pressure-related? | workaround |
+|---|---|---|---|
+| **5A** device init kernel | GPU **~92% full** when the kernel runs | **yes** | `expandable_segments` |
+| **5B** host registration | node's 4 ranks **register concurrently** (timing race) | **no** (fires at ⅓-full) | `LOCKREG` (flock serialization) |
+
+### 5A — device-side init-kernel fault under near-full HBM (fixed 2026-07-24)
+
+**Where:** `corelib/dynamicemb/src/initializer.cu:50` — the random-fill kernel for newly inserted/cached rows.
+The fault is async-reported into whatever CUDA call runs next (seen inside torchrec init and even
+`get_rng_state`), corrupting the context.
+
+**Trigger:** the kernel running while the device is nearly full. At 32.4B dense (~255,000 MiB resident) it
+failed **4/4** on a different worker each time; the identical sparse config under 16.3B dense (~187,000 MiB)
+never failed. Memory-pressure-dependent and near-deterministic.
+
+**Fix:** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+- *Pros:* env-var only — no code change; also **reduced peak HBM 92%→85%** (reclaims allocator fragmentation),
+  a net win exactly where the bug lives; no measured steady-state throughput cost.
+- *Cons:* masks a torch-allocator ↔ DynamicEmb-VMM interaction rather than fixing it; incompatible with CUDA-IPC
+  tensor sharing (and CUDA-graph capture on older torch); small allocation overhead in churn-heavy phases.
+
+### 5B — concurrent host-registration race across local ranks (fixed 2026-07-27)
+
+**Where:** `HostVMMTensor` init — `cudaHostRegister(Mapped|Portable)` of the ~90 GB mlocked host backing store
+(`extendable_tensor.py:149`, via `create_table_state` → `HostExtendableBuffer`).
+
+**Trigger:** the node's 4 rank processes reaching the registration step **at the same moment** — a driver-level
+race on the Grace-coherent platform. **Not** memory-pressure-related: reproduced with the device only ⅓ full.
+Probabilistic per node per run; anything that shifts process timing changes the odds (model depth flips it —
+L=112 faults ~4/5, L=96 rarely; `CUDA_LAUNCH_BLOCKING=1` aligns the processes and makes it near-certain;
+16-worker gangs roll 16× the dice — which is why it killed three consecutive 64-GPU runs (c1–c3) while looking like
+flaky infrastructure). **Bisect evidence:** a `torch.cuda.synchronize()` injected immediately before the call
+*passes*, and `cudaHostRegister` still fails — the registration call itself faults on a healthy context; no
+prior kernel is involved.
+
+**Fix:** `LOCKREG` — an exclusive flock (node-local lockfile) serializing `HostExtendableBuffer` creation
+across the node's ranks; a ~10-line launch-time monkeypatch. **Validated 3/3 clean vs a 4/5-faulting control**
+(P≈0.8% under no-effect).
+- *Pros:* tiny, no rebuild; removes the race mechanism directly; cost is init-only (registrations serialize
+  once at startup).
+- *Cons:* init slows — the 4 ranks' large registrations no longer overlap (adds up to a few minutes at
+  2B-row tables); it is a workaround, not a driver fix — any *other* concurrent host-register path would still
+  race; assumes the node's ranks share a filesystem for the lock (true in our 1-container-per-worker setup).
+
+**Why it matters:** any large-dense + large-DynamicEmb combination on 288 GB-class devices initialises in
+these regimes; both variants are per-worker, async-presenting and context-corrupting, so they masquerade as
+flaky multi-node hangs or misattributed torchrec/RNG errors rather than as an embedding bug.
+
+**Status: CLOSED-BY-WORKAROUND.** With 5A+5B applied together (`expandable_segments` + `LOCKREG`), the 32.4B
+bs3+checkpointing config trained 300 iterations clean at 64 GPU (`fin-R6X-c5`, 2026-07-27: 34.3% MFU, the
+register phase passed on all 16 workers). Both root causes remain upstream bugs worth reporting: 5A an
+allocator/VMM interaction, 5B a concurrent-`cudaHostRegister` driver race.
+
+---
+
+## Issue 6 — DynamicEmb HBM budget sized from the **dense** hidden size, over-allocating the cache 8× (worked around)
+
+**Symptom.** The DynamicEmb GPU cache is far larger than the configured `gpu_capacity_ratio` implies:
+runs OOM at batch sizes that should fit, and memory-vs-ratio sweeps are distorted — a ratio of *r* behaves
+like *8r*. It is silent: nothing warns, the budget is simply wrong.
+
+**Root cause.** The budget is computed as
+
+```
+global_hbm_for_values = item_vocab_gpu_capacity × hidden_size × 4 × multiplier   # gin_config_args.py:186
+```
+
+and `hidden_size` is fed the **dense model's** `network_args.hidden_size` (1024) by
+`pretrain_gr_ranking.py:112` — not the embedding width. The item table is **128**-wide, so every row is
+budgeted as if it were 1024-wide: `cap_scale = 8 × ratio` at our config (1024/128 = 8). The factor is
+exactly `network_args.hidden_size / item_embedding_dim`, so it varies with the model shape and silently
+grows as the dense model gets wider.
+
+**Fix (`HBMFIX=1`).** Pass `network_args.item_embedding_dim` (128) instead of the dense hidden size →
+`cap_scale = ratio`. Safe in this codebase because `item_embedding_dim == contextual_embedding_dim == 128`.
+The recommended upstream form is DynamicEmb's own `get_table_value_bytes()` per `DynamicEmb_APIs.md`, which
+cannot be got wrong this way.
+
+**Why it matters beyond OOMs.** It invalidates any memory- or cache-sensitive measurement taken without it.
+Concretely, our contextual A/B flipped sign across configurations until this was applied: v26.05 read
+−0.85 pp, v26.06-without-HBMFIX read +0.66 pp, and only v26.06 **with** HBMFIX reproduced the study
+baseline (−2.03 pp). *A sign that flips across configurations means the configuration is doing the work,
+not the variable.*
+
+**Status: CLOSED-BY-WORKAROUND**, applied to every run in the scaling study (`HBMFIX=1`, logged per run as
+`HBMFIX: pretrain_gr_ranking -> item_embedding_dim (cap_scale = ratio)`). Worth reporting upstream: the
+budget should be derived from the table's own value width, not from the dense hidden size.
+
+> 📋 **Filing provenance — this issue was in use long before it was written down.** The fix landed in the
+> harness on **2026-07-16** (`ccf4695c`) and every scaling run since carries it, but it was only filed here
+> on **2026-07-31**, prompted by a question about which fixes were enabled. For 15 days it existed solely as
+> a blockquote aside inside a results doc (`SCALING_STUDY_lognormal_v2606_hbmfix.md`), while the
+> contemporaneous Issue 5 was filed the same week it was found.
+>
+> **Why this matters for reading old results:** every result branch produced after 2026-07-16 was run
+> *with* the fix even though no issue documented it, so historical numbers are correct — but a reader
+> auditing "which upstream bugs were worked around?" from this file alone would have missed one of three
+> active patches. **Rule going forward: a launch-time patch is not done until it is filed here.** The
+> harness flags (`HBMFIX`, `LOCKREG`, `DISTOPT`, `OVERLAP`, `GRADBF16`, `CKPT`) are the checklist — each
+> should either point at an issue in this file or be recorded as an optimisation rather than a bug.
