@@ -291,14 +291,10 @@ flaky multi-node hangs or misattributed torchrec/RNG errors rather than as an em
 
 GB300 (sm_103), 284,208 MiB (277.5 GiB) HBM per GPU, 4 GPUs per node, CUDA 13, torch 2.9.1, bf16.
 
-Both runs need three things set outside the gin, or they OOM before reaching either fault:
-
-- the **Issue 6** cache-budget fix — pass `item_embedding_dim`, not `network_args.hidden_size`, at
-  `pretrain_gr_ranking.py:112`. At `hidden_size=8192` with a 128-wide table the unfixed budget is **64x**
-  the configured ratio, so `--ratio 0.95` tries to allocate 60x the table.
-- Megatron `DistributedOptimizer` (`use_distributed_optimizer=True` on both the DDP and optimizer config)
-  and `grad_reduce_in_fp32=False`, in `commons/distributed/sharding.py`. 32.4B dense does not fit without them.
-- 5A additionally ran with full-layer activation checkpointing.
+Both runs need the **Issue 6** cache-budget fix: pass `item_embedding_dim`, not
+`network_args.hidden_size`, at `pretrain_gr_ranking.py:112`. At `hidden_size=8192` with a 128-wide table the
+unfixed budget is **64x** the configured ratio, so `--ratio 0.95` tries to allocate 60x the table and OOMs
+during allocation.
 
 **5B** — 8 GPUs (2 nodes x 4):
 
@@ -330,6 +326,11 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
 attempts. `CUDA_LAUNCH_BLOCKING=1`, `num_layers=112` and more workers all raise the odds by aligning the
 ranks; without them setup passes. Serialising the registrations across each node's 4 ranks makes it complete.
 
+This one fires during table setup, before any training step: `make_optimizer_and_shard` builds the tables
+(`apply_dmp`) before the optimizer (`apply_megatron_ddp`), so the fault lands first and the run is expected
+to OOM at the first optimizer step otherwise. Nothing on the optimizer or activation side is needed —
+no ZeRO, no checkpointing, and no 32.4B-scale model.
+
 **5A** — 64 GPUs (16 nodes x 4), 32.4B dense:
 
 ```bash
@@ -356,10 +357,23 @@ EOF
 torchrun --nnodes=16 --nproc_per_node=4 training/pretrain_gr_ranking.py --gin-config-file repro5a.gin
 ```
 
-`unspecified launch failure` from `initializer.cu:50`, reported async into the next CUDA call. This config
-sits at ~255,000 MiB of 284,208 (~92%) and failed 4/4, each time on a different worker; the same sparse
-config at 16.3B dense (~187,000 MiB, ~66%) never failed.
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` makes it complete.
+`unspecified launch failure` from `initializer.cu:50`, reported async into the next CUDA call. **This one
+fires in early training, not setup** — `initializer.cu:50` is the random-fill for newly inserted rows and
+runs on demand every step, so each step is another roll. The observed failures landed at +41 and +58
+minutes. Let it train; do not expect it during table init.
+
+The window is steady-state training with the device near-full: this config sits at ~255,000 MiB of 284,208
+(~92%) and failed 4/4, each on a different worker; the same sparse config at 16.3B dense (~187,000 MiB,
+~66%) never failed. `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` makes it complete.
+
+Every run we made in this regime had Megatron `DistributedOptimizer`, `grad_reduce_in_fp32=False` and
+full-layer activation checkpointing on. The first two are required to assemble 32.4B on 64 GPUs at all
+(12 B/param of replicated optimizer state is ~389 GB); checkpointing is how it trains at bs3. We never ran
+the regime without checkpointing, so none of the three is established as necessary for the fault.
+
+**5A has only ever reproduced at 64 GPUs.** 8-GPU attempts did not fault, including ones squarely in the
+right regime: L=96, ratio 0.67, sustained ~263–268 GiB, 120 training steps and so ~120 insert-init rolls.
+At 64 GPUs each attempt rolls across 16 workers at once.
 
 `expandable_segments` does not affect 5B.
 
