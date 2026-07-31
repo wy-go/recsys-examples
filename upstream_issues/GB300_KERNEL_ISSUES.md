@@ -323,11 +323,42 @@ CUDA_LAUNCH_BLOCKING=1 torchrun --nnodes=2 --nproc_per_node=4 \
 `CUDA_LAUNCH_BLOCKING=1`, `num_layers=112` and more workers raise the odds by aligning the ranks.
 Serialising the registrations across each node's 4 ranks makes it complete.
 
-**5A** — **no small-scale reproduction.** `initializer.cu:50` random-fills newly inserted rows every step,
-so it fires in early training, not setup. Only seen at 64 GPUs: 32.4B dense (h8192, L96, 2B rows,
-ratio 0.025, bs3), ~255,000 MiB resident (~92%), 4/4 runs at +41–58 min, each on a different worker.
-8-GPU attempts in the same regime (L96, ratio 0.67, ~265 GiB, 120 steps) stayed clean, as did 16.3B dense
-(~187,000 MiB). `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` makes it complete; it does not affect 5B.
+**5A** — 64 GPUs (16 nodes x 4), 32.4B dense, fails in early training:
+
+```bash
+python3 training/benchmark/scripts/generate_gin_config.py \
+    --kernel_backend cutlass --caching --pipeline_type prefetch --ratio 0.025 --include-contextual \
+    --kv_channels 128 --num_attention_heads 64 \
+    --value_dist zipf --value_dist_alpha 1.05 --dist_type hash_roundrobin --balanced_shuffler \
+    --max_sequence_length 2048 --max_train_iters 300 --log_interval 20 -o repro5a.gin
+
+cat >> repro5a.gin <<'EOF'
+NetworkArgs.hidden_size = 8192
+NetworkArgs.num_layers  = 96
+NetworkArgs.disable_contextual_mask = True
+TrainerArgs.train_batch_size = 3
+TrainerArgs.eval_batch_size  = 3
+item_embedding/DynamicEmbeddingArgs.item_vocab_size_or_capacity = 2000000000
+user_id_emb/DynamicEmbeddingArgs.item_vocab_size_or_capacity    = 2000000000
+item_seqlen_dist/RandomDistribution.dist_type = 'lognormal'
+item_seqlen_dist/RandomDistribution.mean = 2000
+item_seqlen_dist/RandomDistribution.std  = 1000
+EOF
+
+# leave PYTORCH_CUDA_ALLOC_CONF unset
+torchrun --nnodes=16 --nproc_per_node=4 training/pretrain_gr_ranking.py --gin-config-file repro5a.gin
+```
+
+Also needs Megatron `DistributedOptimizer`, `grad_reduce_in_fp32=False` and full-layer activation
+checkpointing in `commons/distributed/sharding.py` — 32.4B does not fit on 64 GPUs otherwise.
+
+`unspecified launch failure` from `initializer.cu:50`, reported async into the next CUDA call. It random-fills
+newly inserted rows every step, so it fires in early training, not setup: 4/4 runs at +41–58 min, each on a
+different worker, at ~255,000 MiB resident (~92%). `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` makes
+it complete; it does not affect 5B.
+
+Only reproduced at this scale. 8-GPU attempts in the same regime (L96, ratio 0.67, ~265 GiB, 120 steps)
+stayed clean, as did 16.3B dense (~187,000 MiB).
 
 
 **Status: CLOSED-BY-WORKAROUND.** With 5A+5B applied together (`expandable_segments` + `LOCKREG`), the 32.4B
